@@ -8,7 +8,7 @@ pub mod source;
 
 pub use discover::Install;
 pub use game::Game;
-pub use index::{Index, Resource};
+pub use index::{Index, Resource, RootKind};
 pub use source::{Source, SourceKind};
 
 use std::path::Path;
@@ -45,4 +45,26 @@ pub fn open(
         let _ = cache::store(&index);
     }
     Ok((install, index, Freshness::Built))
+}
+
+/// Open a standalone target: a single capsule, a directory of loose files, or
+/// one resource file, with no installation around it.
+///
+/// Never cached — each of these is already a single fast parse (one archive
+/// header, one directory walk, one `stat`), so a cache would only add a
+/// staleness risk for no measurable speed gain.
+pub fn open_standalone(path: &Path) -> Result<Index> {
+    if path.is_dir() {
+        return index::build_folder(path);
+    }
+    if !path.is_file() {
+        anyhow::bail!("{} does not exist", path.display());
+    }
+    let data = std::fs::read(path)?;
+    match kq_format::sniff(&data) {
+        Some(kq_format::ContainerKind::Erf | kq_format::ContainerKind::Rim) => {
+            index::build_capsule(path)
+        }
+        _ => index::build_single_file(path),
+    }
 }

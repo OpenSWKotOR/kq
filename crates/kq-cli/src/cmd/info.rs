@@ -17,8 +17,12 @@ pub struct Args {
 #[derive(Serialize)]
 struct Report {
     root: String,
-    game: &'static str,
-    title: &'static str,
+    /// "install", "capsule", "folder" or "file".
+    kind: &'static str,
+    /// `None` outside a real installation — there is no game to detect from
+    /// one capsule or one loose file, so nothing pretends there is.
+    game: Option<&'static str>,
+    title: String,
     resources: usize,
     modules: usize,
     containers: usize,
@@ -29,7 +33,7 @@ struct Report {
 }
 
 pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
-    let (install, index) = ctx.index()?;
+    let index = ctx.index()?;
 
     let mut by_source: BTreeMap<String, usize> = BTreeMap::new();
     let mut by_type: BTreeMap<String, usize> = BTreeMap::new();
@@ -40,10 +44,26 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         *by_type.entry(r.restype.to_string()).or_default() += 1;
     }
 
+    let (kind, game, title) = match index.kind {
+        kq_index::RootKind::Install => (
+            "install",
+            Some(index.game.as_str()),
+            index.game.title().to_string(),
+        ),
+        kq_index::RootKind::Capsule => (
+            "capsule",
+            None,
+            format!("Capsule: {}", index.root.display()),
+        ),
+        kq_index::RootKind::Folder => ("folder", None, format!("Folder: {}", index.root.display())),
+        kq_index::RootKind::File => ("file", None, format!("File: {}", index.root.display())),
+    };
+
     let report = Report {
-        root: install.root.display().to_string(),
-        game: index.game.as_str(),
-        title: index.game.title(),
+        root: index.root.display().to_string(),
+        kind,
+        game,
+        title,
         resources: index.resources.len(),
         modules: index.module_roots().len(),
         containers: index.sources.len(),
@@ -59,9 +79,11 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     }
 
     let o = &ctx.out;
-    println!("{}", o.bold(report.title));
+    println!("{}", o.bold(&report.title));
     println!("  {:<12} {}", o.dim("path"), report.root);
-    println!("  {:<12} {}", o.dim("game"), report.game);
+    if let Some(game) = report.game {
+        println!("  {:<12} {}", o.dim("game"), game);
+    }
     println!("  {:<12} {}", o.dim("resources"), report.resources);
     println!("  {:<12} {}", o.dim("modules"), report.modules);
     println!("  {:<12} {}", o.dim("containers"), report.containers);

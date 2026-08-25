@@ -44,7 +44,7 @@ struct Report {
 }
 
 pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
-    let (_install, index) = ctx.index()?;
+    let index = ctx.index()?;
 
     // `kq which nwscript.nss` should work as well as `kq which nwscript`.
     let (name, ext_from_name) = match args.resref.rsplit_once('.') {

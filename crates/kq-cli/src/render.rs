@@ -128,3 +128,14 @@ fn decode_cp1252(bytes: &[u8]) -> String {
         bytes.iter().map(|&b| gff::cp1252_char(b)).collect()
     }
 }
+
+/// Force any bytes to a searchable string, for a format with no decoder yet.
+///
+/// Every byte maps to a character — control bytes included — so nothing is
+/// dropped and a pattern can still find an embedded ASCII string inside an
+/// otherwise binary resource (an NCS constant pool, MDL node names). Not a
+/// text *decoding*: it exists so `kq grep --include-binary` searches real
+/// bytes instead of a one-line placeholder that can never match.
+pub fn raw_as_text(bytes: &[u8]) -> String {
+    decode_cp1252(bytes)
+}

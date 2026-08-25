@@ -34,23 +34,33 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    /// Open the installation and its index.
-    pub fn index(&self) -> anyhow::Result<(kq_index::Install, kq_index::Index)> {
-        let root = resolve::resolve_install(self.install.as_ref())?;
-        // --refresh skips the read but still writes, so the rebuilt index
-        // replaces the stale cache instead of being discarded after use.
-        let read_cache = self.use_cache && !self.refresh;
-        let write_cache = self.use_cache;
-        let (install, index, freshness) = kq_index::open(&root, read_cache, write_cache)?;
+    /// Open the target — an installation, or a standalone capsule/folder/file
+    /// — and get its index.
+    pub fn index(&self) -> anyhow::Result<kq_index::Index> {
+        let (index, freshness) = match resolve::resolve_target(self.install.as_ref())? {
+            resolve::Target::Install(root) => {
+                // --refresh skips the read but still writes, so the rebuilt
+                // index replaces the stale cache instead of being discarded
+                // after use.
+                let read_cache = self.use_cache && !self.refresh;
+                let write_cache = self.use_cache;
+                let (_install, index, freshness) = kq_index::open(&root, read_cache, write_cache)?;
+                (index, freshness)
+            }
+            resolve::Target::Standalone(path) => (
+                kq_index::open_standalone(&path)?,
+                kq_index::Freshness::Built,
+            ),
+        };
         if freshness == kq_index::Freshness::Built && self.refresh {
             // Nothing to say on a plain cold run; only confirm an explicit
             // --refresh actually rebuilt.
-            output::warn(format!("rebuilt index for {}", install.root.display()));
+            output::warn(format!("rebuilt index for {}", index.root.display()));
         }
         for w in &index.warnings {
             output::warn(w);
         }
-        Ok((install, index))
+        Ok(index)
     }
 }
 

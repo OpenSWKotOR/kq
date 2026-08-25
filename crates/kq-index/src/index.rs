@@ -15,7 +15,22 @@ use crate::source::{Source, SourceKind};
 
 /// Bumped whenever the on-disk index layout or parsing changes. A stale cache
 /// is then a miss rather than a wrong answer.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
+
+/// What `root` actually points at. Every command works the same way
+/// regardless — this is metadata for display, not a second code path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RootKind {
+    /// A full KotOR installation rooted at a `chitin.key`.
+    Install,
+    /// A single standalone ERF/RIM/MOD/SAV file.
+    Capsule,
+    /// A directory of loose resource files, not itself an installation.
+    Folder,
+    /// One resource file, indexed as a container of exactly one entry.
+    File,
+}
 
 /// One resource, resolved to the exact bytes on disk that hold it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -44,6 +59,7 @@ impl Resource {
 pub struct Index {
     pub schema: u32,
     pub root: PathBuf,
+    pub kind: RootKind,
     pub game: Game,
     pub fingerprint: u64,
     pub files: Vec<PathBuf>,
@@ -378,12 +394,169 @@ pub fn build(install: &Install) -> Result<Index> {
     let mut index = Index {
         schema: SCHEMA_VERSION,
         root: install.root.clone(),
+        kind: RootKind::Install,
         game: install.game,
         fingerprint: crate::cache::fingerprint(install),
         files,
         sources,
         resources,
         warnings,
+        lookup: HashMap::new(),
+    };
+    index.reindex();
+    Ok(index)
+}
+
+/// Index a single standalone ERF/RIM/MOD/SAV file with no install around it.
+///
+/// Every entry gets [`SourceKind::Loose`] at precedence 0 — there is nothing
+/// else to shadow or be shadowed by.
+pub fn build_capsule(path: &Path) -> Result<Index> {
+    let data = map_file(path)?;
+    let entries = read_capsule_entries(&data, path)?;
+    let label = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+
+    let mut files = Vec::new();
+    let mut file_ids: HashMap<PathBuf, u32> = HashMap::new();
+    let sources = vec![Source {
+        kind: SourceKind::Loose,
+        label,
+        precedence: 0,
+        module_root: None,
+    }];
+    let resources = entries
+        .into_iter()
+        .map(|e| {
+            let file = *file_ids.entry(e.file.clone()).or_insert_with(|| {
+                let id = files.len() as u32;
+                files.push(e.file.clone());
+                id
+            });
+            Resource {
+                resref: e.resref,
+                restype: e.restype,
+                file,
+                offset: e.offset,
+                size: e.size,
+                source: 0,
+            }
+        })
+        .collect();
+
+    let mut index = Index {
+        schema: SCHEMA_VERSION,
+        root: path.to_path_buf(),
+        kind: RootKind::Capsule,
+        game: Game::K1,
+        fingerprint: 0,
+        files,
+        sources,
+        resources,
+        warnings: Vec::new(),
+        lookup: HashMap::new(),
+    };
+    index.reindex();
+    Ok(index)
+}
+
+fn read_capsule_entries(data: &[u8], path: &Path) -> Result<Vec<Entry>> {
+    if erf::sniff(data) {
+        Ok(erf::read_entries(data, path)?)
+    } else if rim::sniff(data) {
+        Ok(rim::read_entries(data, path)?)
+    } else {
+        anyhow::bail!("{}: not an ERF or RIM archive", path.display())
+    }
+}
+
+/// Index a directory of loose resource files that is not itself an
+/// installation. Recurses, same as `Override/` inside a real install.
+pub fn build_folder(dir: &Path) -> Result<Index> {
+    let mut warnings = Vec::new();
+    let mut files = Vec::new();
+    let mut file_ids: HashMap<PathBuf, u32> = HashMap::new();
+    let label = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| dir.display().to_string());
+    let sources = vec![Source {
+        kind: SourceKind::Loose,
+        label,
+        precedence: 0,
+        module_root: None,
+    }];
+
+    let resources = walk_files(dir, &mut warnings)
+        .iter()
+        .filter_map(|p| loose_resource(p, 0, &mut files, &mut file_ids))
+        .collect();
+
+    let mut index = Index {
+        schema: SCHEMA_VERSION,
+        root: dir.to_path_buf(),
+        kind: RootKind::Folder,
+        game: Game::K1,
+        fingerprint: 0,
+        files,
+        sources,
+        resources,
+        warnings,
+        lookup: HashMap::new(),
+    };
+    index.reindex();
+    Ok(index)
+}
+
+/// Index one loose resource file as a one-entry container, so every command
+/// works on a lone `.utc` the same way it works on a whole install.
+pub fn build_single_file(path: &Path) -> Result<Index> {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("{}: no file name", path.display()))?;
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default();
+    let restype = ResType::from_extension(ext).ok_or_else(|| {
+        anyhow::anyhow!("{}: unrecognized resource type '.{ext}'", path.display())
+    })?;
+    let size = std::fs::metadata(path)
+        .with_context(|| format!("cannot stat {}", path.display()))?
+        .len();
+    let label = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+
+    let mut index = Index {
+        schema: SCHEMA_VERSION,
+        root: path.to_path_buf(),
+        kind: RootKind::File,
+        game: Game::K1,
+        fingerprint: 0,
+        files: vec![path.to_path_buf()],
+        sources: vec![Source {
+            kind: SourceKind::Loose,
+            label,
+            precedence: 0,
+            module_root: None,
+        }],
+        resources: vec![Resource {
+            resref: stem,
+            restype,
+            file: 0,
+            offset: 0,
+            size,
+            source: 0,
+        }],
+        warnings: Vec::new(),
         lookup: HashMap::new(),
     };
     index.reindex();

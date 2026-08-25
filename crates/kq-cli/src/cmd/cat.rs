@@ -31,7 +31,7 @@ pub struct Args {
 }
 
 pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
-    let (_install, index) = ctx.index()?;
+    let index = ctx.index()?;
     let (name, want) = crate::parse_ref(&args.resref, args.restype.as_deref())?;
 
     let resource = match &args.from {

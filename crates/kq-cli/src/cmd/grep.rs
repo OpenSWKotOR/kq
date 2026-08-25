@@ -70,7 +70,7 @@ struct ResourceMatches {
 }
 
 pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
-    let (_install, index) = ctx.index()?;
+    let index = ctx.index()?;
 
     let pattern = if args.fixed_strings {
         regex::escape(&args.pattern)
@@ -98,7 +98,17 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
             let r = &index.resources[i as usize];
             let bytes = read::read(&index, r).ok()?;
             let decoded = render::decode(&bytes, Some(r.restype), &r.filename()).ok()?;
-            let projected = render::render(&decoded, Format::Gron, &r.filename()).ok()?;
+            // A type with no decoder renders as one placeholder line that can
+            // never match a pattern. --include-binary means "search the
+            // actual bytes", so force them to text instead of rendering that
+            // placeholder.
+            let projected = match &decoded {
+                render::Decoded::Opaque { .. } if args.include_binary => {
+                    let text = render::Decoded::Text(render::raw_as_text(&bytes));
+                    render::render(&text, Format::Gron, &r.filename()).ok()?
+                }
+                _ => render::render(&decoded, Format::Gron, &r.filename()).ok()?,
+            };
             let lines: Vec<String> = projected
                 .lines()
                 .filter(|l| re.is_match(l))

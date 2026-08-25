@@ -45,7 +45,7 @@ struct Row<'a> {
 }
 
 pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
-    let (_install, index) = ctx.index()?;
+    let index = ctx.index()?;
 
     let mut selected = args
         .filter
