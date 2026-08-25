@@ -21,13 +21,11 @@ You do not need to know Rust. You do need a KotOR install (or a single
 ## Install the tool
 
 ```bash
-git clone https://github.com/arrenkaetris/kq.git
-cd kq
-cargo build --release
+cargo install --git https://github.com/arrenkaetris/kq --locked
 ```
 
-Requires [Rust](https://rustup.rs/) 1.82+. The binary lands at
-`target/release/kq`. Copy it onto your `PATH` if you want.
+Or from a checkout: `cargo build --release` (binary at `target/release/kq`).
+Requires [Rust](https://rustup.rs/) 1.82+.
 
 `kq` never writes into the game folder. The only thing it writes is an
 optional index cache (see [Caching](#caching)).
@@ -174,6 +172,45 @@ kq grep proceduretype -t tpc -l
 
 TPC output is header metadata plus the trailing TXI text. Pixels are not
 decoded.
+
+### What does the game never reach?
+
+```bash
+kq unused --summary
+kq unused -t utc
+kq leftovers --summary
+kq leftovers --what strings -n 40
+```
+
+Two commands share one graph:
+
+1. Catalog every ResRef in the install, and every `dialog.tlk` row.
+2. Scan GFF, 2DA, NCS, SSF, layouts (not textures or audio) for ResRef
+   tokens and Holocron-style StrRefs (`CExoLocString`, 2DA name/desc
+   columns, SSF events). NCS `CONSTS` strings count, so a script that
+   hardcodes a `.dlg` name will mark it.
+3. Seed the graph from names the engine itself opens — talk files, the
+   2DAs hardcoded in the exe, K1 `end_m01aa` / Ebon Hawk / Taris, default
+   `k_def_*` / `k_hen_*` scripts, TSL `001ebo`, plus `StartingModule=` in
+   the ini. **Not** every folder under `modules/`, and **not** `rims/`.
+4. Breadth-first walk. Leftovers are the catalog minus that reachable set.
+
+`kq unused` prints leftover resources. `kq leftovers` prints leftover
+talk-table rows (the usual “49k strings, which are unused?” question)
+and a leftover-resource count. `--what resources` is the same list as
+`unused`. `--catalog --json --summary` includes the seed list.
+
+What this is good for: leftover creature/item/placeable templates,
+unused dialogue files, scripts nothing live calls, and unused TLK rows
+that might be worth restoring.
+
+What it is not: a play-through. `GetObjectByTag("foo" + bar)` will not
+mark `foobar` used. Fonts hardcoded only in the TSL exe are not seeded.
+Textures, models and audio are **left out** of resource leftovers unless
+you pass `--assets`.
+
+`--summary` prints counts. `--json` is one object per leftover string
+(or resource), or one summary object with `--summary --json`.
 
 ### One archive, no install
 

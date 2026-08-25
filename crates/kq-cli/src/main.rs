@@ -8,12 +8,16 @@ mod read;
 mod render;
 mod resolve;
 
+mod live;
+
 mod cmd {
     pub mod cache;
     pub mod cat;
     pub mod grep;
     pub mod info;
+    pub mod leftovers;
     pub mod ls;
+    pub mod unused;
     pub mod which;
 }
 
@@ -122,6 +126,11 @@ enum Command {
     Grep(cmd::grep::Args),
     /// Inspect or clear the index cache.
     Cache(cmd::cache::Args),
+    /// List leftover resources the live graph never reaches.
+    Unused(cmd::unused::Args),
+    /// Catalog every ResRef and talk-table row, then list what the live graph never reaches.
+    #[command(visible_alias = "leftover")]
+    Leftovers(cmd::leftovers::Args),
 }
 
 fn main() -> ExitCode {
@@ -140,6 +149,8 @@ fn main() -> ExitCode {
         Command::Cat(a) => cmd::cat::run(&ctx, a),
         Command::Grep(a) => cmd::grep::run(&ctx, a),
         Command::Cache(a) => cmd::cache::run(&ctx, a),
+        Command::Unused(a) => cmd::unused::run(&ctx, a),
+        Command::Leftovers(a) => cmd::leftovers::run(&ctx, a),
     };
 
     match result {

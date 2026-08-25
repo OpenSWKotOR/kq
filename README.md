@@ -48,15 +48,18 @@ Toolset. It is the `rg`/`jq` of a KotOR install.
 You need a Rust toolchain **1.82 or newer** ([rustup](https://rustup.rs/)).
 
 ```bash
+cargo install --git https://github.com/arrenkaetris/kq --locked
+# or, from a checkout:
 git clone https://github.com/arrenkaetris/kq.git
 cd kq
 cargo build --release
 ./target/release/kq --help
 ```
 
-Put `target/release/kq` somewhere on your `PATH` if you want `kq` as a
-normal command. There is no installer and no extra runtime — one native
-binary, plus the system's usual dynamic libraries.
+`cargo install` puts `kq` on `~/.cargo/bin`. A checkout build is
+`target/release/kq` — copy it onto your `PATH` if you prefer. There is no
+extra runtime — one native binary, plus the system's usual dynamic
+libraries.
 
 KotOR / KotOR II themselves are **not** bundled. Point `kq` at an install you
 already have.
@@ -192,6 +195,30 @@ Use `--ignore-case`.
 
 By default `grep` only reads types it can decode. `--include-binary` also
 searches everything else as raw bytes (slow on a full texture pack).
+
+### `kq unused` / `kq leftovers`
+
+`kq unused` lists leftover **resources**. `kq leftovers` is the inverse
+pipeline: catalog every ResRef and every `dialog.tlk` row, build the same
+mention graph, then print what the engine never reaches — leftover
+**strings** by default.
+
+```bash
+kq unused --summary
+kq unused -t utc -n 40
+kq leftovers --summary
+kq leftovers --what strings -n 40
+kq leftovers --what resources -t dlg
+```
+
+On a full install this is a *live graph*, not “mentioned anywhere.” Seeds
+are engine-hardcoded names (`dialog.tlk`, `feat.2da`, `end_m01aa`, default
+scripts, `StartingModule` in the ini). Isolated A↔B pairs stay unused.
+Nothing in `rims/` is treated as live just because it is on disk.
+
+This is still a mention scan, not a runtime trace. Scripts that build
+names at runtime will not count. Textures and models are omitted from
+resource leftovers unless `--assets`.
 
 ### `kq cache`
 

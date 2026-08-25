@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0
+
+Live mention graph and its inverse. `kq unused` lists leftover resources
+reachable from engine-hardcoded seeds (not every module folder, not
+`rims/`). `kq leftovers` catalogs every ResRef and `dialog.tlk` row, then
+prints what that graph never reaches — unused talk-table strings by
+default.
+
+Isolated A↔B pairs stay unused. NCS `CONSTS` strings count. Texture and
+audio files stay out of resource leftovers unless `--assets`.
+
 ## 0.2.0
 
 Agent integration for Cursor, Claude Code, GitHub Copilot, Gemini CLI,

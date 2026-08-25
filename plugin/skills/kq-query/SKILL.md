@@ -25,6 +25,8 @@ A directory *inside* an install still means the whole game. A named *file*
 | Which file loads? | `kq which <resref>` — `*` is the winner |
 | Read it | `kq cat <resref>` |
 | Search inside | `kq grep <pattern>` |
+| Never reached (resources) | `kq unused` / `kq unused --summary` |
+| Leftover TLK strings | `kq leftovers` / `kq leftovers --what strings` |
 
 Always pass `-i` unless `KQ_INSTALL` is set or cwd is inside the install.
 
@@ -39,6 +41,8 @@ Always pass `-i` unless `KQ_INSTALL` is set or cwd is inside the install.
 **cat:** `-t`, `-f outline|gron|json|raw`, `--raw`, `--from <container-label>`.
 
 **grep:** `--ignore-case` (no `-i`), `-F`, `-l`, `--winners`, `--include-binary`, `-n`.
+
+**unused / leftovers:** `--summary`, `-n`, `--assets`. leftovers also has `--what strings|resources|both` and `--catalog`.
 
 If you need a flag not listed here, run `kq <cmd> --help`. Do not invent flags.
 
