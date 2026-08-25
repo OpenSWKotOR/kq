@@ -275,3 +275,8 @@ KQ_CACHE_DIR=/tmp/kqcache       # override cache location
 ```
 
 These apply to every subcommand. Subcommand flags never reuse `-i`.
+
+## AI assistants
+
+Cursor, Claude Code, Copilot, Gemini CLI, and OpenCode can load the same
+contract. See [Using kq with AI agents](ai-agents.md).

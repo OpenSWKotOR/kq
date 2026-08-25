@@ -1,0 +1,15 @@
+---
+description: Rust conventions for the kq workspace crates
+globs: "**/*.rs"
+alwaysApply: false
+---
+
+# kq Rust
+
+Workspace crates: `kq-format` (decoders), `kq-index` (install walk + cache),
+`kq-cli` (clap, render, commands). MSRV 1.82.
+
+- Keep CLI exit codes stable (`crates/kq-cli/src/exit.rs`).
+- `-i` stays global `--install`. Do not add a colliding short flag.
+- Decode by sniffing bytes; do not trust extensions alone.
+- `grep` searchable types live in `is_searchable` — update that when adding a text projection.

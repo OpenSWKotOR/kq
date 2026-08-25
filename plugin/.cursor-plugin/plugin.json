@@ -1,0 +1,20 @@
+{
+  "name": "kq",
+  "displayName": "kq",
+  "version": "0.2.0",
+  "description": "Query a Knights of the Old Republic installation with the kq CLI. Teaches agents correct flags, resolve order, and decoded-text workflows.",
+  "author": {
+    "name": "Arren Kaetris",
+    "url": "https://github.com/arrenkaetris/kq"
+  },
+  "homepage": "https://github.com/arrenkaetris/kq",
+  "repository": "https://github.com/arrenkaetris/kq",
+  "license": "MIT",
+  "keywords": ["kotor", "kotor2", "aurora", "cli", "gff", "ncs"],
+  "category": "developer-tools",
+  "tags": ["kotor", "cli", "gff", "modding"],
+  "skills": "./skills/",
+  "rules": "./rules/",
+  "agents": "./agents/",
+  "hooks": "./hooks/cursor-hooks.json"
+}

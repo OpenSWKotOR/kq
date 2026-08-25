@@ -61,6 +61,15 @@ binary, plus the system's usual dynamic libraries.
 KotOR / KotOR II themselves are **not** bundled. Point `kq` at an install you
 already have.
 
+### AI agents (Cursor, Claude, Copilot, Gemini, OpenCode)
+
+This repo includes an agent contract and a plugin so assistants use `kq`
+instead of extracting archives. See **[Using kq with AI agents](docs/ai-agents.md)**.
+
+```bash
+./scripts/install-agent-plugin.sh   # Cursor local plugin symlink
+```
+
 ---
 
 ## Point it at a game

@@ -1,0 +1,14 @@
+---
+description: kq CLI contract for KotOR queries
+alwaysApply: true
+---
+
+# kq
+
+Use `kq` to query a KotOR / TSL install in place. Do not extract archives.
+
+- `-i` is `--install`. Grep ignore-case is `--ignore-case` only.
+- Commands: `info`, `ls`, `which`, `cat`, `grep`, `cache`.
+- Prefer `--json`. Exit 3 = no match, 4 = no install.
+- Read-only: no write, pack, compile, or NSS decompile.
+- Follow repo `AGENTS.md` when present.
