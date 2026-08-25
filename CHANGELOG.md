@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+Standalone installer one-liners (`curl | sh`, `wget`, `irm | iex`), matching
+the uv-style quickstart. Linux x86_64 downloads a release binary; other
+platforms fall back to `cargo install --git`.
+
 ## 0.3.0
 
 Live mention graph and its inverse. `kq unused` lists leftover resources

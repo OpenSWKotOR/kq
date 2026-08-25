@@ -1,7 +1,7 @@
 # kq CLI reference
 
 Confirm live flags with `kq --help` and `kq <command> --help`. This file
-matches kq 0.3.x.
+matches kq 0.3.1.
 
 ## Source kinds (`-s`)
 

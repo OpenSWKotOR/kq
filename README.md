@@ -45,21 +45,39 @@ Toolset. It is the `rg`/`jq` of a KotOR install.
 
 ## Install
 
-You need a Rust toolchain **1.82 or newer** ([rustup](https://rustup.rs/)).
+### Standalone installer
+
+macOS and Linux:
+
+```bash
+curl -LsSf https://github.com/arrenkaetris/kq/releases/latest/download/install.sh | sh
+```
+
+If you do not have `curl`:
+
+```bash
+wget -qO- https://github.com/arrenkaetris/kq/releases/latest/download/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/arrenkaetris/kq/releases/latest/download/install.ps1 | iex"
+```
+
+Pin a release with `KQ_VERSION=v0.3.1` (or put the tag in the download URL).
+Inspect the script first with `| less` / `| more` if you want.
+
+Linux x86_64 gets a prebuilt binary in `~/.local/bin`. Other platforms build
+from source when `cargo` is on `PATH` ([Rust 1.82+](https://rustup.rs/)).
+
+### Cargo
 
 ```bash
 cargo install --git https://github.com/arrenkaetris/kq --locked
-# or, from a checkout:
-git clone https://github.com/arrenkaetris/kq.git
-cd kq
-cargo build --release
-./target/release/kq --help
 ```
 
-`cargo install` puts `kq` on `~/.cargo/bin`. A checkout build is
-`target/release/kq` — copy it onto your `PATH` if you prefer. There is no
-extra runtime — one native binary, plus the system's usual dynamic
-libraries.
+From a checkout: `cargo build --release` → `target/release/kq`.
 
 KotOR / KotOR II themselves are **not** bundled. Point `kq` at an install you
 already have.
