@@ -28,7 +28,10 @@ pub struct Args {
     filter: Filter,
 
     /// Case-insensitive match.
-    #[arg(short = 'i', long)]
+    ///
+    /// No `-i` short form: that's already `--install`, global on every
+    /// command, and a per-command override would only be silently shadowed.
+    #[arg(long)]
     ignore_case: bool,
 
     /// Treat the pattern as a literal string, not a regex.
