@@ -1,9 +1,10 @@
-//! `kq graph` — live mention hierarchy and leftovers in one report.
+//! `kq graph` — complete live mention hierarchy and leftover map.
 //!
-//! Shows what the engine can reach from hardcoded seeds as a tree, then
-//! every resource (and optionally talk-table row) the walk never entered.
+//! JSON output (the default) includes every resource in scope with
+//! `status`, `mentions`, `parent_path`, the full reachability tree, and
+//! every leftover talk-table row — no truncation.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufWriter, Write};
 
 use anyhow::Result;
@@ -16,12 +17,9 @@ use crate::{exit, Ctx};
 
 #[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
 enum What {
-    /// Reachable tree plus leftover resources (and a leftover-string count).
     #[default]
     Both,
-    /// Only the reachable hierarchy.
     Used,
-    /// Only leftover resources and strings.
     Leftovers,
 }
 
@@ -30,170 +28,215 @@ pub struct Args {
     #[command(flatten)]
     filter: Filter,
 
-    /// What to print.
     #[arg(long, value_enum, default_value_t = What::Both)]
     what: What,
 
-    /// Include textures, models and audio.
+    /// Exclude textures, models and audio from the report.
     #[arg(long)]
-    assets: bool,
+    no_assets: bool,
 
-    /// Also list shadowed copies, not only winners.
+    /// Only the winning copy of each name (shadowed copies omitted).
     #[arg(long)]
-    all_copies: bool,
+    winners_only: bool,
 
     /// Counts only — no tree or path lists.
     #[arg(long)]
     summary: bool,
 
-    /// Tree depth in text mode. 0 means unlimited.
-    #[arg(long, default_value_t = 3, value_name = "N")]
+    /// Tree depth in `--text` mode. 0 means unlimited. JSON always emits the full tree.
+    #[arg(long, default_value_t = 0, value_name = "N")]
     depth: usize,
 
-    /// Print install-relative paths only, one per line (respects `--what`).
+    /// Print install-relative paths only, one per line (`--text` mode).
     #[arg(short = 'q', long)]
     quiet: bool,
 
-    /// Stop after this many leftover rows. 0 means no limit.
+    /// Stop after this many rows (`--text` mode only). 0 means no limit.
     #[arg(short = 'n', long, default_value_t = 0, value_name = "N")]
     limit: usize,
 }
 
 #[derive(Serialize)]
+struct TlkRecord {
+    strref: i64,
+    text: String,
+    sound: String,
+    status: &'static str,
+}
+
+#[derive(Serialize)]
 struct Node<'a> {
+    id: u32,
     path: String,
     resref: &'a str,
     #[serde(rename = "type")]
     restype: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     module: Option<&'a str>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     mentions: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     children: Vec<Node<'a>>,
 }
 
 #[derive(Serialize)]
-struct StringLeftover {
-    strref: i64,
-    text: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    sound: String,
+struct Section<'a> {
+    count: usize,
+    resources: Vec<unused::Row<'a>>,
+    strings: Vec<TlkRecord>,
+    #[serde(default)]
+    tree: Vec<Node<'a>>,
+    #[serde(default)]
+    by_module: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    by_type: Vec<unused::TypeCount>,
 }
 
 #[derive(Serialize)]
 struct Report<'a> {
     scanned: usize,
-    catalog: usize,
+    catalog_resrefs: usize,
     seeds: &'a [String],
-    used_resources: usize,
-    leftover_resources: usize,
-    tlk_entries: usize,
-    leftover_strings: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tree: Option<Vec<Node<'a>>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    used_by_module: Option<BTreeMap<String, Vec<String>>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    leftovers: Option<Vec<unused::Row<'a>>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    leftover_strings_detail: Option<Vec<StringLeftover>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    by_type: Option<Vec<unused::TypeCount>>,
+    seed_ids: &'a [u32],
+    resources_in_scope: usize,
+    used: Section<'a>,
+    leftovers: Section<'a>,
+    catalog: Vec<unused::Row<'a>>,
 }
 
 pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let index = ctx.index()?;
     let graph = live::build(&index)?;
 
-    let leftover_ids =
-        unused::leftover_ids(&index, &graph, &args.filter, args.assets, args.all_copies)?;
-    let leftover_strings: Vec<_> = graph.leftover_strings().into_iter().cloned().collect();
+    let in_scope = unused::candidate_ids(
+        &index,
+        &args.filter,
+        args.no_assets,
+        args.winners_only,
+    )?;
+    let winners = unused::winner_set(&index, &in_scope);
+    let leftover_ids = unused::leftover_ids(
+        &index,
+        &graph,
+        &args.filter,
+        args.no_assets,
+        args.winners_only,
+    )?;
+
+    let mut used_ids: Vec<u32> = graph
+        .used_ids
+        .iter()
+        .copied()
+        .filter(|id| in_scope.contains(id))
+        .collect();
+    used_ids.sort_unstable();
+
+    let leftover_set: HashSet<u32> = leftover_ids.iter().copied().collect();
+
+    let used_strings = used_tlk_records(&graph);
+    let leftover_strings = leftover_tlk_records(&graph);
 
     let show_used = matches!(args.what, What::Both | What::Used);
     let show_leftovers = matches!(args.what, What::Both | What::Leftovers);
 
-    if args.quiet {
-        return write_quiet(ctx, &index, &graph, &leftover_ids, &leftover_strings, &args);
-    }
-
-    if args.summary {
-        return write_summary(
-            ctx,
-            &graph,
-            leftover_ids.len(),
-            leftover_strings.len(),
+    if args.quiet && !ctx.out.json {
+        return write_quiet(
+            &index,
+            &used_ids,
+            &leftover_ids,
+            &leftover_strings,
             &args,
+            show_used,
+            show_leftovers,
         );
     }
 
-    let tree = if show_used && !ctx.out.json {
-        Some(build_forest(&index, &graph, args.depth))
-    } else {
-        None
-    };
-    let json_tree = if show_used && ctx.out.json {
-        Some(build_json_forest(&index, &graph, 0))
-    } else {
-        None
-    };
-    let used_by_module = if show_used && ctx.out.json {
-        Some(group_used_by_module(&index, &graph))
-    } else {
-        None
-    };
+    if args.summary {
+        return write_summary(ctx, &graph, used_ids.len(), leftover_ids.len(), leftover_strings.len());
+    }
+
+    let mut catalog: Vec<unused::Row<'_>> = in_scope
+        .iter()
+        .map(|&id| {
+            let status = if leftover_set.contains(&id) {
+                "leftover"
+            } else {
+                "used"
+            };
+            unused::resource_row(&index, id, &graph, &winners, status)
+        })
+        .collect();
+    catalog.sort_by(|a, b| a.path.cmp(&b.path));
+
+    let tree = build_json_forest(&index, &graph, 0);
+    let used_by_module = group_by_module(&index, &used_ids);
+    let leftover_by_module = group_by_module(&index, &leftover_ids);
+
+    let used_resources: Vec<_> = used_ids
+        .iter()
+        .map(|&id| unused::resource_row(&index, id, &graph, &winners, "used"))
+        .collect();
+    let leftover_resources: Vec<_> = leftover_ids
+        .iter()
+        .map(|&id| unused::resource_row(&index, id, &graph, &winners, "leftover"))
+        .collect();
 
     if ctx.out.json {
-        let mut leftover_rows = Vec::new();
-        if show_leftovers {
-            let ids = apply_limit(&leftover_ids, args.limit);
-            for &i in ids {
-                leftover_rows.push(unused_row(&index, i));
-            }
-        }
-        let mut string_rows = Vec::new();
-        if show_leftovers {
-            let rows = apply_limit_slice(&leftover_strings, args.limit);
-            for row in rows {
-                string_rows.push(StringLeftover {
-                    strref: row.strref,
-                    text: row.text.clone(),
-                    sound: row.sound.clone(),
-                });
-            }
-        }
         let report = Report {
             scanned: graph.scanned,
-            catalog: graph.catalog.len(),
+            catalog_resrefs: graph.catalog.len(),
             seeds: &graph.seeds,
-            used_resources: graph.used_ids.len(),
-            leftover_resources: leftover_ids.len(),
-            tlk_entries: graph.tlk.len(),
-            leftover_strings: leftover_strings.len(),
-            tree: json_tree,
-            used_by_module,
-            leftovers: if show_leftovers {
-                Some(leftover_rows)
-            } else {
-                None
+            seed_ids: &graph.seed_ids,
+            resources_in_scope: in_scope.len(),
+            used: Section {
+                count: if show_used { used_resources.len() } else { 0 },
+                resources: if show_used {
+                    used_resources
+                } else {
+                    Vec::new()
+                },
+                strings: if show_used {
+                    used_strings
+                } else {
+                    Vec::new()
+                },
+                tree: if show_used { tree } else { Vec::new() },
+                by_module: if show_used {
+                    used_by_module
+                } else {
+                    BTreeMap::new()
+                },
+                by_type: Vec::new(),
             },
-            leftover_strings_detail: if show_leftovers {
-                Some(string_rows)
-            } else {
-                None
+            leftovers: Section {
+                count: if show_leftovers {
+                    leftover_resources.len()
+                } else {
+                    0
+                },
+                resources: if show_leftovers {
+                    leftover_resources
+                } else {
+                    Vec::new()
+                },
+                strings: if show_leftovers {
+                    leftover_strings
+                } else {
+                    Vec::new()
+                },
+                tree: Vec::new(),
+                by_module: if show_leftovers {
+                    leftover_by_module
+                } else {
+                    BTreeMap::new()
+                },
+                by_type: if show_leftovers {
+                    unused::count_by_type(&index, &leftover_ids)
+                } else {
+                    Vec::new()
+                },
             },
-            by_type: if show_leftovers {
-                Some(unused::count_by_type(&index, &leftover_ids))
-            } else {
-                None
-            },
+            catalog,
         };
         ctx.out.json_value(&report)?;
-        return Ok(if graph.used_ids.is_empty() && leftover_ids.is_empty() {
-            exit::NO_MATCH
-        } else {
-            exit::OK
-        });
+        return Ok(exit::OK);
     }
 
     let stdout = std::io::stdout();
@@ -206,33 +249,20 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
             "{}",
             o.bold(&format!(
                 "REACHABLE — {} resources from {} seeds",
-                graph.used_ids.len(),
+                used_ids.len(),
                 graph.seeds.len()
             ))
         )?;
-        writeln!(w, "{}", o.dim("seeds:"))?;
         for seed in &graph.seeds {
-            writeln!(w, "  {}", seed)?;
+            writeln!(w, "  seed  {seed}")?;
         }
         writeln!(w)?;
-        writeln!(w, "{}", o.dim("tree:"))?;
-        if let Some(forest) = tree {
-            for (i, root) in forest.iter().enumerate() {
-                if i > 0 {
-                    writeln!(w)?;
-                }
-                print_tree(&mut w, root, "", true, o)?;
+        let forest = build_text_forest(&index, &graph, args.depth);
+        for (i, root) in forest.iter().enumerate() {
+            if i > 0 {
+                writeln!(w)?;
             }
-        }
-        if args.depth > 0 {
-            writeln!(
-                w,
-                "\n{}",
-                o.dim(&format!(
-                    "Tree truncated at depth {}. Use --depth 0 for the full hierarchy.",
-                    args.depth
-                ))
-            )?;
+            print_tree(&mut w, root, "", true, o)?;
         }
     }
 
@@ -249,57 +279,45 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
                 leftover_strings.len()
             ))
         )?;
-        if !leftover_ids.is_empty() {
-            writeln!(w, "{}", o.dim("resources:"))?;
-            let ids = apply_limit(&leftover_ids, args.limit);
-            for &i in ids {
-                writeln!(w, "  {}", index.virt_path(&index.resources[i as usize]))?;
-            }
-            if args.limit > 0 && leftover_ids.len() > args.limit {
-                writeln!(
-                    w,
-                    "  {}",
-                    o.dim(&format!(
-                        "... {} more (use -n 0)",
-                        leftover_ids.len() - args.limit
-                    ))
-                )?;
-            }
+        let ids = apply_limit(&leftover_ids, args.limit);
+        for &i in ids {
+            writeln!(w, "  {}", index.virt_path(&index.resources[i as usize]))?;
         }
-        if !leftover_strings.is_empty() {
-            writeln!(w, "{}", o.dim("strings:"))?;
-            let rows = apply_limit_slice(&leftover_strings, args.limit);
-            for row in rows {
-                let text = one_line(&row.text, 72);
-                if row.sound.is_empty() {
-                    writeln!(w, "  {:>7}  {}", row.strref, text)?;
-                } else {
-                    writeln!(w, "  {:>7}  [{}] {}", row.strref, row.sound, text)?;
-                }
-            }
-            if args.limit > 0 && leftover_strings.len() > args.limit {
-                writeln!(
-                    w,
-                    "  {}",
-                    o.dim(&format!(
-                        "... {} more strings (use -n 0)",
-                        leftover_strings.len() - args.limit
-                    ))
-                )?;
-            }
+        for row in apply_limit_slice(&leftover_strings, args.limit) {
+            writeln!(w, "  {:>7}  {}", row.strref, one_line(&row.text, 120))?;
         }
     }
 
-    writeln!(
-        w,
-        "\n{}",
-        o.dim(
-            "Live-graph scan from engine seeds — not a runtime trace. \
-             Isolated A↔B pairs stay in LEFTOVERS."
-        )
-    )?;
     w.flush()?;
     Ok(exit::OK)
+}
+
+fn used_tlk_records(graph: &LiveGraph) -> Vec<TlkRecord> {
+    graph
+        .tlk
+        .iter()
+        .filter(|row| graph.used_strrefs.contains(&row.strref))
+        .map(|row| TlkRecord {
+            strref: row.strref,
+            text: row.text.clone(),
+            sound: row.sound.clone(),
+            status: "used",
+        })
+        .collect()
+}
+
+fn leftover_tlk_records(graph: &LiveGraph) -> Vec<TlkRecord> {
+    graph
+        .tlk
+        .iter()
+        .filter(|row| !graph.used_strrefs.contains(&row.strref))
+        .map(|row| TlkRecord {
+            strref: row.strref,
+            text: row.text.clone(),
+            sound: row.sound.clone(),
+            status: "leftover",
+        })
+        .collect()
 }
 
 struct TreeNode {
@@ -308,7 +326,7 @@ struct TreeNode {
     children: Vec<TreeNode>,
 }
 
-fn build_forest(index: &kq_index::Index, graph: &LiveGraph, max_depth: usize) -> Vec<TreeNode> {
+fn build_text_forest(index: &kq_index::Index, graph: &LiveGraph, max_depth: usize) -> Vec<TreeNode> {
     let children_map = children_map(graph);
     graph
         .seed_ids
@@ -317,11 +335,7 @@ fn build_forest(index: &kq_index::Index, graph: &LiveGraph, max_depth: usize) ->
         .collect()
 }
 
-fn build_json_forest<'a>(
-    index: &'a kq_index::Index,
-    graph: &'a LiveGraph,
-    max_depth: usize,
-) -> Vec<Node<'a>> {
+fn build_json_forest<'a>(index: &'a kq_index::Index, graph: &'a LiveGraph, max_depth: usize) -> Vec<Node<'a>> {
     let children_map = children_map(graph);
     graph
         .seed_ids
@@ -336,9 +350,21 @@ fn children_map(graph: &LiveGraph) -> HashMap<u32, Vec<u32>> {
         map.entry(parent).or_default().push(child);
     }
     for kids in map.values_mut() {
-        kids.sort_by_key(|&id| id);
+        kids.sort_unstable();
     }
     map
+}
+
+fn sorted_mentions(graph: &LiveGraph, id: u32) -> Vec<String> {
+    graph
+        .edges
+        .get(&id)
+        .map(|set| {
+            let mut v: Vec<_> = set.iter().cloned().collect();
+            v.sort();
+            v
+        })
+        .unwrap_or_default()
 }
 
 fn build_subtree(
@@ -349,17 +375,6 @@ fn build_subtree(
     max_depth: usize,
     depth: usize,
 ) -> TreeNode {
-    let r = &index.resources[id as usize];
-    let mut mentions: Vec<String> = graph
-        .edges
-        .get(&id)
-        .map(|set| {
-            let mut v: Vec<_> = set.iter().cloned().collect();
-            v.sort();
-            v
-        })
-        .unwrap_or_default();
-    mentions.truncate(8);
     let children = if max_depth > 0 && depth + 1 >= max_depth {
         Vec::new()
     } else {
@@ -375,8 +390,8 @@ fn build_subtree(
             .unwrap_or_default()
     };
     TreeNode {
-        path: index.virt_path(r),
-        mentions,
+        path: index.virt_path(&index.resources[id as usize]),
+        mentions: sorted_mentions(graph, id),
         children,
     }
 }
@@ -391,15 +406,6 @@ fn json_subtree<'a>(
 ) -> Node<'a> {
     let r = &index.resources[id as usize];
     let source = index.source(r);
-    let mentions: Vec<String> = graph
-        .edges
-        .get(&id)
-        .map(|set| {
-            let mut v: Vec<_> = set.iter().cloned().collect();
-            v.sort();
-            v
-        })
-        .unwrap_or_default();
     let children = if max_depth > 0 && depth + 1 >= max_depth {
         Vec::new()
     } else {
@@ -415,30 +421,26 @@ fn json_subtree<'a>(
             .unwrap_or_default()
     };
     Node {
+        id,
         path: index.virt_path(r),
         resref: &r.resref,
         restype: r.restype.to_string(),
         module: source.module_root.as_deref(),
-        mentions,
+        mentions: sorted_mentions(graph, id),
         children,
     }
 }
 
-fn group_used_by_module(
-    index: &kq_index::Index,
-    graph: &LiveGraph,
-) -> BTreeMap<String, Vec<String>> {
+fn group_by_module(index: &kq_index::Index, ids: &[u32]) -> BTreeMap<String, Vec<String>> {
     let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for &id in &graph.used_ids {
+    for &id in ids {
         let r = &index.resources[id as usize];
         let key = index
             .source(r)
             .module_root
             .clone()
             .unwrap_or_else(|| index.source(r).kind.as_str().to_string());
-        map.entry(key)
-            .or_default()
-            .push(index.virt_path(r));
+        map.entry(key).or_default().push(index.virt_path(r));
     }
     for paths in map.values_mut() {
         paths.sort();
@@ -456,14 +458,11 @@ fn print_tree(
     let branch = if is_last { "└─ " } else { "├─ " };
     writeln!(w, "{prefix}{branch}{}", o.accent(&node.path))?;
     if !node.mentions.is_empty() {
-        let mention_prefix = format!("{prefix}   ");
-        let joined = node.mentions.join(", ");
-        let suffix = if graph_mentions_truncated(node) {
-            " …"
-        } else {
-            ""
-        };
-        writeln!(w, "{}", o.dim(&format!("{mention_prefix}→ {joined}{suffix}")))?;
+        writeln!(
+            w,
+            "{}",
+            o.dim(&format!("{}   → {}", prefix, node.mentions.join(", ")))
+        )?;
     }
     let child_prefix = format!("{prefix}{}   ", if is_last { " " } else { "│" });
     for (i, child) in node.children.iter().enumerate() {
@@ -478,40 +477,28 @@ fn print_tree(
     Ok(())
 }
 
-fn graph_mentions_truncated(node: &TreeNode) -> bool {
-    node.mentions.len() >= 8
-}
-
 fn write_quiet(
-    ctx: &Ctx,
     index: &kq_index::Index,
-    graph: &LiveGraph,
+    used_ids: &[u32],
     leftover_ids: &[u32],
-    leftover_strings: &[live::TlkRow],
+    leftover_strings: &[TlkRecord],
     args: &Args,
+    show_used: bool,
+    show_leftovers: bool,
 ) -> Result<i32> {
     let stdout = std::io::stdout();
     let mut w = BufWriter::new(stdout.lock());
-    let show_used = matches!(args.what, What::Both | What::Used);
-    let show_leftovers = matches!(args.what, What::Both | What::Leftovers);
-
     if show_used {
-        let mut used: Vec<_> = graph.used_ids.iter().copied().collect();
-        used.sort_by_key(|&id| index.virt_path(&index.resources[id as usize]));
-        for id in used {
+        for &id in used_ids {
             writeln!(w, "{}", index.virt_path(&index.resources[id as usize]))?;
         }
     }
     if show_leftovers {
-        let ids = apply_limit(leftover_ids, args.limit);
-        for &i in ids {
+        for &i in apply_limit(leftover_ids, args.limit) {
             writeln!(w, "{}", index.virt_path(&index.resources[i as usize]))?;
         }
-        if !ctx.out.json {
-            let rows = apply_limit_slice(leftover_strings, args.limit);
-            for row in rows {
-                writeln!(w, "dialog.tlk#{}", row.strref)?;
-            }
+        for row in apply_limit_slice(leftover_strings, args.limit) {
+            writeln!(w, "dialog.tlk#{}/{}", row.strref, row.status)?;
         }
     }
     w.flush()?;
@@ -521,21 +508,21 @@ fn write_quiet(
 fn write_summary(
     ctx: &Ctx,
     graph: &LiveGraph,
+    used: usize,
     leftover_resources: usize,
     leftover_strings: usize,
-    args: &Args,
 ) -> Result<i32> {
+    let payload = serde_json::json!({
+        "scanned": graph.scanned,
+        "catalog_resrefs": graph.catalog.len(),
+        "seeds": graph.seeds,
+        "used_resources": used,
+        "leftover_resources": leftover_resources,
+        "tlk_entries": graph.tlk.len(),
+        "leftover_strings": leftover_strings,
+    });
     if ctx.out.json {
-        let report = serde_json::json!({
-            "scanned": graph.scanned,
-            "catalog": graph.catalog.len(),
-            "seeds": graph.seeds,
-            "used_resources": graph.used_ids.len(),
-            "leftover_resources": leftover_resources,
-            "tlk_entries": graph.tlk.len(),
-            "leftover_strings": leftover_strings,
-        });
-        ctx.out.json_value(&report)?;
+        ctx.out.json_value(&payload)?;
     } else {
         let stdout = std::io::stdout();
         let mut w = BufWriter::new(stdout.lock());
@@ -545,31 +532,13 @@ fn write_summary(
             graph.catalog.len(),
             graph.scanned,
             graph.seeds.len(),
-            graph.used_ids.len(),
+            used,
             leftover_resources,
             leftover_strings
         )?;
-        if matches!(args.what, What::Both | What::Leftovers) {
-            writeln!(w, "  use `kq unused -q` or `kq graph --what leftovers -q` for leftover paths")?;
-        }
         w.flush()?;
     }
     Ok(exit::OK)
-}
-
-fn unused_row<'a>(index: &'a kq_index::Index, i: u32) -> unused::Row<'a> {
-    let r = &index.resources[i as usize];
-    let source = index.source(r);
-    unused::Row {
-        name: r.filename(),
-        path: index.virt_path(r),
-        resref: &r.resref,
-        restype: r.restype.to_string(),
-        size: r.size,
-        source: source.kind.as_str(),
-        container: &source.label,
-        module: source.module_root.as_deref(),
-    }
 }
 
 fn apply_limit(ids: &[u32], limit: usize) -> &[u32] {

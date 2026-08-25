@@ -77,7 +77,7 @@ impl Ctx {
     long_about = "kq reads a KotOR installation — its archives, modules and \
 loose files — and answers questions about it.\n\n\
 Point it at an install with --install, set KQ_INSTALL, or run it from inside \
-one. Every command takes --json.",
+one. JSON is the default; pass `--text` for human-readable output.",
     disable_help_subcommand = true,
     propagate_version = true
 )]
@@ -92,9 +92,13 @@ struct Cli {
     )]
     install: Option<PathBuf>,
 
-    /// Emit JSON instead of text.
-    #[arg(long, global = true)]
+    /// Emit structured JSON (default). Use `--text` for human-readable output.
+    #[arg(long, default_value_t = true)]
     json: bool,
+
+    /// Human-readable text instead of JSON.
+    #[arg(long)]
+    text: bool,
 
     /// When to colorize output.
     #[arg(long, global = true, value_name = "WHEN", default_value = "auto")]
@@ -140,7 +144,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let ctx = Ctx {
         install: cli.install,
-        out: Out::new(cli.json, cli.color),
+        out: Out::new(cli.json && !cli.text, cli.text, cli.color),
         use_cache: !cli.no_cache,
         refresh: cli.refresh,
     };

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.4
+
+JSON is the default output format (`--text` for human-readable views). No
+truncation in graph/leftover reports: full reachability tree, complete
+`catalog` with `status`/`mentions`/`parent_path` on every resource, all
+talk-table rows, and all resource types included unless `--no-assets`.
+Shadowed copies are included unless `--winners-only`. `kq cat` defaults to
+nested JSON with a resource envelope and full GFF content.
+
 ## 0.3.3
 
 `kq graph` — live mention hierarchy and leftovers in one report. Text mode

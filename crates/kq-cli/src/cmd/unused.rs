@@ -22,16 +22,13 @@ pub struct Args {
     #[command(flatten)]
     filter: Filter,
 
-    /// Include textures, models and audio in the unused report.
-    ///
-    /// Off by default: those types are often referenced from mesh data or
-    /// the engine in ways `kq` does not yet decode, so the list would lie.
+    /// Exclude textures, models and audio from leftover reports.
     #[arg(long)]
-    assets: bool,
+    no_assets: bool,
 
-    /// Also consider shadowed copies, not only the winner of each name.
+    /// Only the winning copy of each name (shadowed copies omitted).
     #[arg(long)]
-    all_copies: bool,
+    winners_only: bool,
 
     /// Print counts by type instead of every name.
     #[arg(long)]
@@ -48,6 +45,7 @@ pub struct Args {
 
 #[derive(Serialize)]
 pub struct Row<'a> {
+    pub id: u32,
     pub name: String,
     pub path: String,
     pub resref: &'a str,
@@ -57,6 +55,12 @@ pub struct Row<'a> {
     pub source: &'a str,
     pub container: &'a str,
     pub module: Option<&'a str>,
+    pub file: String,
+    pub offset: u64,
+    pub winner: bool,
+    pub parent_path: Option<String>,
+    pub mentions: Vec<String>,
+    pub status: &'static str,
 }
 
 #[derive(Serialize)]
@@ -82,17 +86,21 @@ pub struct TypeCount {
 pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let index = ctx.index()?;
     let graph = live::build(&index)?;
-    let candidates = leftover_ids(&index, &graph, &args.filter, args.assets, args.all_copies)?;
-    let candidate_count = {
-        let mut all = args.filter.select(&index, "")?;
-        if !args.all_copies {
-            Filter::dedup_winners(&index, &mut all);
-        }
-        if args.filter.types.is_empty() && !args.assets {
-            all.retain(|&i| !live::is_noise(index.resources[i as usize].restype));
-        }
-        all.len()
-    };
+    let candidates = leftover_ids(
+        &index,
+        &graph,
+        &args.filter,
+        args.no_assets,
+        args.winners_only,
+    )?;
+    let all_candidates = candidate_ids(
+        &index,
+        &args.filter,
+        args.no_assets,
+        args.winners_only,
+    )?;
+    let candidate_count = all_candidates.len();
+    let winners = winner_set(&index, &all_candidates);
     let by_type_rows = count_by_type(&index, &candidates);
     let unused_count = candidates.len();
 
@@ -127,7 +135,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
                 w,
                 "\n{}",
                 ctx.out.dim(
-                    "Live-graph leftovers, not a runtime trace. Texture/model/audio omitted unless --assets."
+                    "Live-graph leftovers, not a runtime trace. Pass --no-assets to drop textures/models/audio."
                 )
             )?;
         }
@@ -139,7 +147,16 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         });
     }
 
-    write_resource_rows(ctx, &mut w, &index, &candidates, args.limit, args.quiet)?;
+    write_resource_rows(
+        ctx,
+        &mut w,
+        &index,
+        &graph,
+        &winners,
+        &candidates,
+        args.limit,
+        args.quiet,
+    )?;
     if !ctx.out.json && !args.quiet && args.limit == 0 {
         writeln!(
             w,
@@ -158,22 +175,82 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     })
 }
 
+pub fn candidate_ids(
+    index: &kq_index::Index,
+    filter: &Filter,
+    no_assets: bool,
+    winners_only: bool,
+) -> Result<Vec<u32>> {
+    let mut candidates = filter.select(index, "")?;
+    if winners_only {
+        Filter::dedup_winners(index, &mut candidates);
+    }
+    if no_assets && filter.types.is_empty() {
+        candidates.retain(|&i| !live::is_asset(index.resources[i as usize].restype));
+    }
+    if filter.types.is_empty() {
+        candidates.retain(|&i| !live::is_noise(index.resources[i as usize].restype));
+    }
+    Ok(candidates)
+}
+
 pub fn leftover_ids(
     index: &kq_index::Index,
     graph: &LiveGraph,
     filter: &Filter,
-    assets: bool,
-    all_copies: bool,
+    no_assets: bool,
+    winners_only: bool,
 ) -> Result<Vec<u32>> {
-    let mut candidates = filter.select(index, "")?;
-    if !all_copies {
-        Filter::dedup_winners(index, &mut candidates);
-    }
-    if filter.types.is_empty() && !assets {
-        candidates.retain(|&i| !live::is_noise(index.resources[i as usize].restype));
-    }
+    let mut candidates = candidate_ids(index, filter, no_assets, winners_only)?;
     candidates.retain(|&i| !graph.used_ids.contains(&i));
     Ok(candidates)
+}
+
+pub fn winner_set(index: &kq_index::Index, ids: &[u32]) -> std::collections::HashSet<u32> {
+    let mut winners = ids.to_vec();
+    Filter::dedup_winners(index, &mut winners);
+    winners.into_iter().collect()
+}
+
+pub fn resource_row<'a>(
+    index: &'a kq_index::Index,
+    id: u32,
+    graph: &LiveGraph,
+    winners: &std::collections::HashSet<u32>,
+    status: &'static str,
+) -> Row<'a> {
+    let r = &index.resources[id as usize];
+    let source = index.source(r);
+    let parent_path = graph
+        .parent
+        .get(&id)
+        .map(|&p| index.virt_path(&index.resources[p as usize]));
+    let mentions = graph
+        .edges
+        .get(&id)
+        .map(|set| {
+            let mut v: Vec<_> = set.iter().cloned().collect();
+            v.sort();
+            v
+        })
+        .unwrap_or_default();
+    Row {
+        id,
+        name: r.filename(),
+        path: index.virt_path(r),
+        resref: &r.resref,
+        restype: r.restype.to_string(),
+        size: r.size,
+        source: source.kind.as_str(),
+        container: &source.label,
+        module: source.module_root.as_deref(),
+        file: index.rel_file(r),
+        offset: r.offset,
+        winner: winners.contains(&id),
+        parent_path,
+        mentions,
+        status,
+    }
 }
 
 pub fn count_by_type(index: &kq_index::Index, ids: &[u32]) -> Vec<TypeCount> {
@@ -197,10 +274,13 @@ pub fn count_by_type(index: &kq_index::Index, ids: &[u32]) -> Vec<TypeCount> {
     rows
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn write_resource_rows(
     ctx: &Ctx,
     w: &mut impl Write,
     index: &kq_index::Index,
+    graph: &LiveGraph,
+    winners: &std::collections::HashSet<u32>,
     ids: &[u32],
     limit: usize,
     quiet: bool,
@@ -213,21 +293,15 @@ pub fn write_resource_rows(
     };
     for &i in printed {
         let r = &index.resources[i as usize];
-        let source = index.source(r);
         if ctx.out.json {
-            ctx.out.json_line(
-                w,
-                &Row {
-                    name: r.filename(),
-                    path: index.virt_path(r),
-                    resref: &r.resref,
-                    restype: r.restype.to_string(),
-                    size: r.size,
-                    source: source.kind.as_str(),
-                    container: &source.label,
-                    module: source.module_root.as_deref(),
-                },
-            )?;
+            if quiet {
+                ctx.out.json_line(w, &serde_json::json!({ "path": index.virt_path(r) }))?;
+            } else {
+                ctx.out.json_line(
+                    w,
+                    &resource_row(index, i, graph, winners, "leftover"),
+                )?;
+            }
         } else if quiet {
             writeln!(w, "{}", index.virt_path(r))?;
         } else {

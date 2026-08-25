@@ -39,13 +39,13 @@ pub struct Args {
     #[arg(long)]
     catalog: bool,
 
-    /// Include textures, models and audio in leftover *resources*.
+    /// Exclude textures, models and audio from leftover *resources*.
     #[arg(long)]
-    assets: bool,
+    no_assets: bool,
 
-    /// Also consider shadowed copies, not only the winner of each name.
+    /// Only the winning copy of each name (shadowed copies omitted).
     #[arg(long)]
-    all_copies: bool,
+    winners_only: bool,
 
     /// Print counts instead of every leftover string / name.
     #[arg(long)]
@@ -57,15 +57,15 @@ pub struct Args {
 }
 
 #[derive(Serialize)]
-struct StringRow<'a> {
+struct StringRow {
     strref: i64,
-    text: &'a str,
-    #[serde(skip_serializing_if = "str::is_empty")]
-    sound: &'a str,
+    text: String,
+    sound: String,
+    status: &'static str,
 }
 
 #[derive(Serialize)]
-struct Report {
+struct Report<'a> {
     scanned: usize,
     catalog: usize,
     seeds: Vec<String>,
@@ -77,30 +77,52 @@ struct Report {
     leftover_strings: usize,
     leftover_empty_strings: usize,
     by_type: Vec<unused::TypeCount>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    catalog_names: Option<Vec<String>>,
+    leftover_string_rows: Vec<StringRow>,
+    leftover_resource_rows: Vec<unused::Row<'a>>,
+    catalog_names: Vec<String>,
 }
 
 pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let index = ctx.index()?;
     let graph = live::build(&index)?;
 
-    let resource_ids =
-        unused::leftover_ids(&index, &graph, &args.filter, args.assets, args.all_copies)?;
+    let in_scope = unused::candidate_ids(
+        &index,
+        &args.filter,
+        args.no_assets,
+        args.winners_only,
+    )?;
+    let winners = unused::winner_set(&index, &in_scope);
+    let resource_ids = unused::leftover_ids(
+        &index,
+        &graph,
+        &args.filter,
+        args.no_assets,
+        args.winners_only,
+    )?;
     let leftover_resources = resource_ids.len();
     let by_type = unused::count_by_type(&index, &resource_ids);
 
     let leftover_tlk = graph.leftover_strings();
     let leftover_empty = leftover_tlk.iter().filter(|r| r.text.is_empty()).count();
 
-    let catalog_names = if args.catalog {
-        let mut names: Vec<String> = index.resources.iter().map(|r| r.filename()).collect();
-        names.sort();
-        names.dedup();
-        Some(names)
-    } else {
-        None
-    };
+    let mut catalog_names: Vec<String> = index.resources.iter().map(|r| r.filename()).collect();
+    catalog_names.sort();
+    catalog_names.dedup();
+
+    let leftover_string_rows: Vec<StringRow> = leftover_tlk
+        .iter()
+        .map(|row| StringRow {
+            strref: row.strref,
+            text: row.text.clone(),
+            sound: row.sound.clone(),
+            status: "leftover",
+        })
+        .collect();
+    let leftover_resource_rows: Vec<_> = resource_ids
+        .iter()
+        .map(|&id| unused::resource_row(&index, id, &graph, &winners, "leftover"))
+        .collect();
 
     let report = Report {
         scanned: graph.scanned,
@@ -114,6 +136,8 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         leftover_strings: leftover_tlk.len(),
         leftover_empty_strings: leftover_empty,
         by_type,
+        leftover_string_rows,
+        leftover_resource_rows,
         catalog_names,
     };
 
@@ -125,42 +149,48 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let stdout = std::io::stdout();
     let mut w = BufWriter::new(stdout.lock());
 
-    if args.summary {
-        if ctx.out.json {
-            ctx.out.json_value(&report)?;
+    if ctx.out.json {
+        ctx.out.json_value(&report)?;
+        w.flush()?;
+        return Ok(if interesting {
+            exit::OK
         } else {
-            writeln!(
-                w,
-                "catalog {}  scanned {}  seeds {}  used-resrefs {}  leftover-resources {}",
-                report.catalog,
-                report.scanned,
-                report.seeds.len(),
-                report.used_resrefs,
-                report.leftover_resources
-            )?;
-            writeln!(
-                w,
-                "tlk {}  used-strings {}  leftover-strings {}  leftover-empty {}",
-                report.tlk_entries,
-                report.used_strings,
-                report.leftover_strings,
-                report.leftover_empty_strings
-            )?;
-            if show_resources {
-                writeln!(w)?;
-                writeln!(w, "{:<8} {:>8} {:>12}", "type", "unused", "bytes")?;
-                for row in &report.by_type {
-                    writeln!(w, "{:<8} {:>8} {:>12}", row.restype, row.count, row.bytes)?;
-                }
+            exit::NO_MATCH
+        });
+    }
+
+    if args.summary {
+        writeln!(
+            w,
+            "catalog {}  scanned {}  seeds {}  used-resrefs {}  leftover-resources {}",
+            report.catalog,
+            report.scanned,
+            report.seeds.len(),
+            report.used_resrefs,
+            report.leftover_resources
+        )?;
+        writeln!(
+            w,
+            "tlk {}  used-strings {}  leftover-strings {}  leftover-empty {}",
+            report.tlk_entries,
+            report.used_strings,
+            report.leftover_strings,
+            report.leftover_empty_strings
+        )?;
+        if show_resources {
+            writeln!(w)?;
+            writeln!(w, "{:<8} {:>8} {:>12}", "type", "unused", "bytes")?;
+            for row in &report.by_type {
+                writeln!(w, "{:<8} {:>8} {:>12}", row.restype, row.count, row.bytes)?;
             }
-            writeln!(
-                w,
-                "\n{}",
-                ctx.out.dim(
-                    "Live-graph leftovers, not a runtime trace. Isolated A↔B pairs stay unused. rims/ is not a seed."
-                )
-            )?;
         }
+        writeln!(
+            w,
+            "\n{}",
+            ctx.out.dim(
+                "Live-graph leftovers, not a runtime trace. Isolated A↔B pairs stay unused. rims/ is not a seed."
+            )
+        )?;
         w.flush()?;
         return Ok(if interesting {
             exit::OK
@@ -170,7 +200,16 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     }
 
     if show_resources && !show_strings {
-        unused::write_resource_rows(ctx, &mut w, &index, &resource_ids, args.limit, false)?;
+        unused::write_resource_rows(
+            ctx,
+            &mut w,
+            &index,
+            &graph,
+            &winners,
+            &resource_ids,
+            args.limit,
+            false,
+        )?;
         w.flush()?;
         return Ok(if leftover_resources == 0 {
             exit::NO_MATCH
@@ -189,8 +228,9 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
                 &mut w,
                 &StringRow {
                     strref: row.strref,
-                    text: &row.text,
-                    sound: &row.sound,
+                    text: row.text.clone(),
+                    sound: row.sound.clone(),
+                    status: "leftover",
                 },
             )?;
         } else {

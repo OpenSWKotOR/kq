@@ -18,7 +18,6 @@ struct Report<'a> {
     path: String,
     source: &'static str,
     container: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
     module: Option<&'a str>,
     file: String,
     offset: u64,
@@ -36,8 +35,8 @@ pub struct Args {
     #[arg(short = 't', long = "type", value_name = "EXT")]
     restype: Option<String>,
 
-    /// How to render the resource.
-    #[arg(short = 'f', long, value_name = "FORMAT", default_value = "outline")]
+    /// How to render the resource (`json` is the default structured form).
+    #[arg(short = 'f', long, value_name = "FORMAT", default_value = "json")]
     format: Format,
 
     /// Write the resource's exact bytes. Same as `--format raw`.
@@ -73,7 +72,17 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let stdout = std::io::stdout();
     let mut w = stdout.lock();
 
-    let format = if args.raw { Format::Raw } else { args.format };
+    let format = if args.raw {
+        Format::Raw
+    } else if ctx.out.text {
+        match args.format {
+            Format::Json => Format::Outline,
+            other => other,
+        }
+    } else {
+        Format::Json
+    };
+
     if format == Format::Raw {
         w.write_all(&bytes)?;
         return Ok(exit::OK);
@@ -81,17 +90,11 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
 
     let filename = resource.filename();
     let decoded = render::decode(&bytes, Some(resource.restype), &filename)?;
-    // --json is a global flag; honor it even when --format was not given.
-    let format = if ctx.out.json && format == Format::Outline {
-        Format::Json
-    } else {
-        format
-    };
 
     if format == Format::Json {
         let source = index.source(resource);
         let report = Report {
-            name: filename.clone(),
+            name: filename,
             resref: &resource.resref,
             restype: resource.restype.to_string(),
             path: index.virt_path(resource),
@@ -107,7 +110,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         return Ok(exit::OK);
     }
 
-    w.write_all(render::render(&decoded, format, &filename)?.as_bytes())?;
+    w.write_all(render::render(&decoded, format, &resource.filename())?.as_bytes())?;
     Ok(exit::OK)
 }
 

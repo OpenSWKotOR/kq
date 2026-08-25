@@ -18,11 +18,12 @@ pub enum ColorChoice {
 #[derive(Clone, Copy, Debug)]
 pub struct Out {
     pub json: bool,
+    pub text: bool,
     pub color: bool,
 }
 
 impl Out {
-    pub fn new(json: bool, color: ColorChoice) -> Out {
+    pub fn new(json: bool, text: bool, color: ColorChoice) -> Out {
         let color = match color {
             ColorChoice::Always => true,
             ColorChoice::Never => false,
@@ -32,7 +33,7 @@ impl Out {
                 std::env::var_os("NO_COLOR").is_none() && io::stdout().is_terminal()
             }
         };
-        Out { json, color }
+        Out { json, text, color }
     }
 
     /// Print a value as JSON on stdout.

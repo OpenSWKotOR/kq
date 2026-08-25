@@ -340,8 +340,9 @@ pub fn is_asset(t: ResType) -> bool {
 }
 
 /// Types omitted from leftover reports unless `-t` or `--assets` is given.
+/// Only `.nss` — the engine loads compiled `.ncs`, not source.
 pub fn is_noise(t: ResType) -> bool {
-    is_asset(t) || SOURCE_EXTS.contains(&t.extension().unwrap_or(""))
+    SOURCE_EXTS.contains(&t.extension().unwrap_or(""))
 }
 
 fn all_winners(index: &Index) -> Vec<u32> {
