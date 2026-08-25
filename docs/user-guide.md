@@ -208,7 +208,10 @@ decoded.
 ### What does the game never reach?
 
 ```bash
-kq unused -q                      # every unused path, one per line
+kq graph
+kq graph --json | jq '.tree[0]'
+kq graph --what leftovers -q > unused-paths.txt
+kq unused -q                      # leftover paths only (no tree)
 kq unused --summary
 kq unused -t utc
 kq leftovers --summary

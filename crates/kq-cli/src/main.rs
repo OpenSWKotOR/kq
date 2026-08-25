@@ -15,6 +15,7 @@ mod cmd {
     pub mod cat;
     pub mod grep;
     pub mod info;
+    pub mod graph;
     pub mod leftovers;
     pub mod ls;
     pub mod unused;
@@ -128,6 +129,8 @@ enum Command {
     Cache(cmd::cache::Args),
     /// List leftover resources the live graph never reaches.
     Unused(cmd::unused::Args),
+    /// Live mention hierarchy and leftovers in one report.
+    Graph(cmd::graph::Args),
     /// Catalog every ResRef and talk-table row, then list what the live graph never reaches.
     #[command(visible_alias = "leftover")]
     Leftovers(cmd::leftovers::Args),
@@ -150,6 +153,7 @@ fn main() -> ExitCode {
         Command::Grep(a) => cmd::grep::run(&ctx, a),
         Command::Cache(a) => cmd::cache::run(&ctx, a),
         Command::Unused(a) => cmd::unused::run(&ctx, a),
+        Command::Graph(a) => cmd::graph::run(&ctx, a),
         Command::Leftovers(a) => cmd::leftovers::run(&ctx, a),
     };
 

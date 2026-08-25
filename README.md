@@ -222,12 +222,12 @@ mention graph, then print what the engine never reaches — leftover
 **strings** by default.
 
 ```bash
+kq graph                           # reachability tree + leftover paths
+kq graph --json                    # nested tree + leftover arrays
+kq graph --what leftovers -q       # leftover paths only
+kq graph --depth 0                 # unlimited tree depth
 kq unused -q                      # every unused path, one per line
 kq unused --summary
-kq unused -t utc -n 40
-kq leftovers --summary
-kq leftovers --what strings -n 40
-kq leftovers --what resources -t dlg
 ```
 
 On a full install this is a *live graph*, not “mentioned anywhere.” Seeds

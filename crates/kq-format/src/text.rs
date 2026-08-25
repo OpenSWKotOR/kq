@@ -35,7 +35,17 @@ use crate::wav::Wav;
 /// tagged object, because collapsing those would lose the StrRef that makes
 /// them meaningful.
 pub fn gff_to_json(gff: &Gff) -> J {
-    struct_to_json(&gff.root)
+    let mut map = match struct_to_json(&gff.root) {
+        J::Object(m) => m,
+        other => {
+            let mut m = Map::new();
+            m.insert("_root".into(), other);
+            m
+        }
+    };
+    map.insert("_file_type".into(), json!(gff.file_type));
+    map.insert("_version".into(), json!(gff.version));
+    J::Object(map)
 }
 
 fn struct_to_json(s: &Struct) -> J {

@@ -207,9 +207,14 @@ pub struct TlkRow {
 pub struct LiveGraph {
     pub catalog: HashSet<String>,
     pub seeds: Vec<String>,
+    pub seed_ids: Vec<u32>,
     pub reachable: HashSet<String>,
     /// Winner resource indices the live walk actually entered.
     pub used_ids: HashSet<u32>,
+    /// First parent seen during BFS (child → parent resource id).
+    pub parent: HashMap<u32, u32>,
+    /// ResRef / module-root tokens each used resource mentions.
+    pub edges: HashMap<u32, HashSet<String>>,
     /// ResRefs of `used_ids`, plus VO names on used talk-table rows.
     pub used: HashSet<String>,
     pub used_strrefs: HashSet<i64>,
@@ -286,7 +291,7 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
     }
 
     let (seed_labels, seed_ids) = seed_ids(index, &catalog, &by_resref, &module_entries);
-    let used_ids = bfs(&seed_ids, &edges, &by_resref, &module_entries);
+    let (used_ids, parent) = bfs(&seed_ids, &edges, &by_resref, &module_entries);
 
     let tlk = load_dialog_tlk(index)?;
     let tlk_len = tlk.len() as i64;
@@ -318,8 +323,11 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
     Ok(LiveGraph {
         catalog,
         seeds: seed_labels,
+        seed_ids,
         reachable,
         used_ids,
+        parent,
+        edges,
         used,
         used_strrefs,
         tlk,
@@ -523,8 +531,9 @@ fn bfs(
     edges: &HashMap<u32, HashSet<String>>,
     by_resref: &HashMap<String, Vec<u32>>,
     module_entries: &HashMap<String, Vec<u32>>,
-) -> HashSet<u32> {
+) -> (HashSet<u32>, HashMap<u32, u32>) {
     let mut seen = HashSet::new();
+    let mut parent = HashMap::new();
     let mut q = VecDeque::new();
     for &id in seeds {
         if seen.insert(id) {
@@ -539,6 +548,7 @@ fn bfs(
             if let Some(ids) = by_resref.get(tok) {
                 for &j in ids {
                     if seen.insert(j) {
+                        parent.insert(j, id);
                         q.push_back(j);
                     }
                 }
@@ -546,13 +556,14 @@ fn bfs(
             if let Some(ids) = module_entries.get(tok) {
                 for &j in ids {
                     if seen.insert(j) {
+                        parent.insert(j, id);
                         q.push_back(j);
                     }
                 }
             }
         }
     }
-    seen
+    (seen, parent)
 }
 
 fn collect(
@@ -739,7 +750,7 @@ mod tests {
         by_resref.insert("dead_a".into(), vec![1]);
         by_resref.insert("dead_b".into(), vec![2]);
         by_resref.insert("n_endsol01".into(), vec![11]);
-        let seen = bfs(&[10], &edges, &by_resref, &HashMap::new());
+        let (seen, _parent) = bfs(&[10], &edges, &by_resref, &HashMap::new());
         assert!(seen.contains(&10));
         assert!(seen.contains(&11));
         assert!(!seen.contains(&1));
@@ -758,7 +769,7 @@ mod tests {
         by_resref.insert("other_mod_utc".into(), vec![31]);
         let mut module_entries = HashMap::new();
         module_entries.insert("end_m01aa".into(), vec![20, 21]);
-        let seen = bfs(&[20, 21], &edges, &by_resref, &module_entries);
+        let (seen, _parent) = bfs(&[20, 21], &edges, &by_resref, &module_entries);
         assert!(seen.contains(&30));
         assert!(!seen.contains(&31));
         assert!(!seen.contains(&99));

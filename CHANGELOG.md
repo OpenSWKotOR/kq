@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.3
+
+`kq graph` — live mention hierarchy and leftovers in one report. Text mode
+shows seeds, an ASCII tree of reachable resources (with ResRef edges), then
+every leftover path and talk-table string. JSON mode returns a nested `tree`,
+`used_by_module`, and `leftovers` arrays.
+
+Structured JSON improvements: `kq cat --json` wraps decoded content in a
+resource envelope (`path`, `source`, `module`, `content`). GFF JSON includes
+`_file_type` and `_version` (PyKotor-style metadata on nested trees).
+
 ## 0.3.2
 
 Install-relative paths everywhere: archives (`.mod` / `.rim` / `.erf` /

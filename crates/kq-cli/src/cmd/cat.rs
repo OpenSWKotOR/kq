@@ -3,9 +3,28 @@
 use std::io::Write;
 
 use anyhow::Result;
+use serde::Serialize;
+use serde_json::Value as J;
 
-use crate::render::{self, Format};
+use crate::render::{self, Decoded, Format};
 use crate::{exit, read, Ctx};
+
+#[derive(Serialize)]
+struct Report<'a> {
+    name: String,
+    resref: &'a str,
+    #[serde(rename = "type")]
+    restype: String,
+    path: String,
+    source: &'static str,
+    container: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    module: Option<&'a str>,
+    file: String,
+    offset: u64,
+    size: u64,
+    content: J,
+}
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -68,6 +87,36 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     } else {
         format
     };
+
+    if format == Format::Json {
+        let source = index.source(resource);
+        let report = Report {
+            name: filename.clone(),
+            resref: &resource.resref,
+            restype: resource.restype.to_string(),
+            path: index.virt_path(resource),
+            source: source.kind.as_str(),
+            container: &source.label,
+            module: source.module_root.as_deref(),
+            file: index.rel_file(resource),
+            offset: resource.offset,
+            size: resource.size,
+            content: decoded_to_json(&decoded),
+        };
+        ctx.out.json_value(&report)?;
+        return Ok(exit::OK);
+    }
+
     w.write_all(render::render(&decoded, format, &filename)?.as_bytes())?;
     Ok(exit::OK)
+}
+
+fn decoded_to_json(decoded: &Decoded) -> J {
+    match decoded {
+        Decoded::Value(v) => v.clone(),
+        Decoded::Text(t) => J::String(t.clone()),
+        Decoded::Opaque { kind, len } => {
+            serde_json::json!({ "kind": kind, "bytes": len, "decoded": false })
+        }
+    }
 }
