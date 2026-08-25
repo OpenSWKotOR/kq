@@ -33,6 +33,7 @@ pub struct Args {
 #[derive(Serialize)]
 struct Row<'a> {
     name: String,
+    path: String,
     resref: &'a str,
     #[serde(rename = "type")]
     restype: String,
@@ -68,26 +69,25 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         if ctx.out.json {
             let row = Row {
                 name: r.filename(),
+                path: index.virt_path(r),
                 resref: &r.resref,
                 restype: r.restype.to_string(),
                 size: r.size,
                 source: source.kind.as_str(),
                 container: &source.label,
                 module: source.module_root.as_deref(),
-                file: index.file(r).display().to_string(),
+                file: index.rel_file(r),
                 offset: r.offset,
             };
             ctx.out.json_line(&mut w, &row)?;
         } else if args.quiet {
-            writeln!(w, "{}", r.filename())?;
+            writeln!(w, "{}", index.virt_path(r))?;
         } else {
             writeln!(
                 w,
-                "{:<24} {:>10}  {:<13} {}",
-                ctx.out.accent(&r.filename()),
-                r.size,
-                source.kind.as_str(),
-                ctx.out.dim(&source.label)
+                "{}  {:>10}",
+                ctx.out.accent(&index.virt_path(r)),
+                r.size
             )?;
         }
     }

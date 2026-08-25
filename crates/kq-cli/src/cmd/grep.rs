@@ -61,6 +61,7 @@ pub struct Args {
 #[derive(Serialize)]
 struct Hit<'a> {
     resource: String,
+    path: String,
     source: &'a str,
     container: &'a str,
     module: Option<&'a str>,
@@ -146,13 +147,14 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         let r = &index.resources[m.index as usize];
         let source = index.source(r);
         if args.files_with_matches {
-            writeln!(w, "{}", r.filename())?;
+            writeln!(w, "{}", index.virt_path(r))?;
             continue;
         }
         for line in &m.lines {
             if ctx.out.json {
                 let hit = Hit {
                     resource: r.filename(),
+                    path: index.virt_path(r),
                     source: source.kind.as_str(),
                     container: &source.label,
                     module: source.module_root.as_deref(),
@@ -160,7 +162,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
                 };
                 ctx.out.json_line(&mut w, &hit)?;
             } else {
-                writeln!(w, "{} {}", ctx.out.accent(&r.filename()), line)?;
+                writeln!(w, "{} {}", ctx.out.accent(&index.virt_path(r)), line)?;
             }
         }
     }

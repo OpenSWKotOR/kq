@@ -27,7 +27,7 @@ A directory *inside* an install still means the whole game. A named *file*
 | Which file loads? | `kq which <resref>` — `*` is the winner |
 | Read it | `kq cat <resref>` |
 | Search inside | `kq grep <pattern>` |
-| Never reached (resources) | `kq unused` / `kq unused --summary` |
+| Never reached (resources) | `kq unused -q` / `kq unused --summary` |
 | Leftover TLK strings | `kq leftovers` / `kq leftovers --what strings` |
 
 Always pass `-i` unless `KQ_INSTALL` is set or cwd is inside the install.

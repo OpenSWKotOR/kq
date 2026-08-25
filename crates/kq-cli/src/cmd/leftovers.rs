@@ -170,7 +170,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     }
 
     if show_resources && !show_strings {
-        unused::write_resource_rows(ctx, &mut w, &index, &resource_ids, args.limit)?;
+        unused::write_resource_rows(ctx, &mut w, &index, &resource_ids, args.limit, false)?;
         w.flush()?;
         return Ok(if leftover_resources == 0 {
             exit::NO_MATCH

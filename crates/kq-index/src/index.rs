@@ -132,6 +132,21 @@ impl Index {
         roots.dedup();
         roots
     }
+
+    /// Path of the backing file, relative to the install (or capsule) root.
+    pub fn rel_file(&self, r: &Resource) -> String {
+        rel_to_root(&self.root, self.file(r))
+    }
+
+    /// Where a human should look: install-relative, with archives as folders.
+    ///
+    /// `modules/end_m01aa.mod/m01aa.git`, `data/templates.bif/c_drdg.utc`,
+    /// `Override/g_assassindrd01.utc`. A `.mod` and the `*_s.rim` / `*_dlg.erf`
+    /// trio share a [`Source::module_root`]; the `.mod` still wins on name
+    /// collisions because its precedence is lower.
+    pub fn virt_path(&self, r: &Resource) -> String {
+        virtual_path(&self.root, self.file(r), &r.filename())
+    }
 }
 
 /// Read a file, memory-mapping it when it is large enough to be worth the
@@ -169,8 +184,8 @@ impl std::ops::Deref for MappedFile {
 
 /// Strip module piece suffixes to get the logical module root.
 ///
-/// `danm13_s.rim`, `danm13_dlg.erf` and `danm13.mod` are three files that
-/// make up one module named `danm13`.
+/// `danm13.rim` + `danm13_s.rim` + `danm13_dlg.erf` are one composite
+/// module. `danm13.mod` is the same root and outranks all three.
 pub fn module_root(filename: &str) -> String {
     let stem = filename
         .rsplit_once('.')
@@ -708,4 +723,78 @@ fn walk_files(dir: &Path, warnings: &mut Vec<String>) -> Vec<PathBuf> {
     }
     out.sort();
     out
+}
+
+pub fn is_archive_path(file: &Path) -> bool {
+    matches!(
+        file.extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("mod" | "erf" | "rim" | "bif" | "hak" | "sav")
+    )
+}
+
+fn rel_to_root(root: &Path, file: &Path) -> String {
+    file.strip_prefix(root)
+        .unwrap_or(file)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+pub fn virtual_path(root: &Path, file: &Path, inner_name: &str) -> String {
+    let rel = rel_to_root(root, file);
+    if is_archive_path(file) {
+        if rel.is_empty() {
+            inner_name.to_string()
+        } else {
+            format!("{rel}/{inner_name}")
+        }
+    } else {
+        rel
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn composite_module_pieces_share_a_root() {
+        assert_eq!(module_root("end_m01aa.mod"), "end_m01aa");
+        assert_eq!(module_root("end_m01aa.rim"), "end_m01aa");
+        assert_eq!(module_root("end_m01aa_s.rim"), "end_m01aa");
+        assert_eq!(module_root("end_m01aa_dlg.erf"), "end_m01aa");
+        assert_eq!(module_root("danm13_s.RIM"), "danm13");
+    }
+
+    #[test]
+    fn virt_path_treats_archives_as_folders() {
+        let root = PathBuf::from("/game");
+        assert_eq!(
+            virtual_path(&root, Path::new("/game/modules/end_m01aa.mod"), "m01aa.git"),
+            "modules/end_m01aa.mod/m01aa.git"
+        );
+        assert_eq!(
+            virtual_path(
+                &root,
+                Path::new("/game/modules/end_m01aa_s.rim"),
+                "end_trask.utc"
+            ),
+            "modules/end_m01aa_s.rim/end_trask.utc"
+        );
+        assert_eq!(
+            virtual_path(&root, Path::new("/game/data/templates.bif"), "c_drdg.utc"),
+            "data/templates.bif/c_drdg.utc"
+        );
+        assert_eq!(
+            virtual_path(
+                &root,
+                Path::new("/game/Override/g_assassindrd01.utc"),
+                "g_assassindrd01.utc"
+            ),
+            "Override/g_assassindrd01.utc"
+        );
+    }
 }

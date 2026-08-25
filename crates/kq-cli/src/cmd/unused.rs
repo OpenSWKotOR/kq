@@ -40,11 +40,16 @@ pub struct Args {
     /// Stop after this many unused names. 0 means no limit.
     #[arg(short = 'n', long, default_value_t = 0, value_name = "N")]
     limit: usize,
+
+    /// Print only install-relative paths, one per line.
+    #[arg(short = 'q', long)]
+    quiet: bool,
 }
 
 #[derive(Serialize)]
 pub struct Row<'a> {
     pub name: String,
+    pub path: String,
     pub resref: &'a str,
     #[serde(rename = "type")]
     pub restype: String,
@@ -84,7 +89,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
             Filter::dedup_winners(&index, &mut all);
         }
         if args.filter.types.is_empty() && !args.assets {
-            all.retain(|&i| !live::is_asset(index.resources[i as usize].restype));
+            all.retain(|&i| !live::is_noise(index.resources[i as usize].restype));
         }
         all.len()
     };
@@ -134,8 +139,8 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         });
     }
 
-    write_resource_rows(ctx, &mut w, &index, &candidates, args.limit)?;
-    if !ctx.out.json && args.limit == 0 {
+    write_resource_rows(ctx, &mut w, &index, &candidates, args.limit, args.quiet)?;
+    if !ctx.out.json && !args.quiet && args.limit == 0 {
         writeln!(
             w,
             "\n{}",
@@ -165,9 +170,9 @@ pub fn leftover_ids(
         Filter::dedup_winners(index, &mut candidates);
     }
     if filter.types.is_empty() && !assets {
-        candidates.retain(|&i| !live::is_asset(index.resources[i as usize].restype));
+        candidates.retain(|&i| !live::is_noise(index.resources[i as usize].restype));
     }
-    candidates.retain(|&i| !graph.used.contains(&index.resources[i as usize].resref));
+    candidates.retain(|&i| !graph.used_ids.contains(&i));
     Ok(candidates)
 }
 
@@ -198,6 +203,7 @@ pub fn write_resource_rows(
     index: &kq_index::Index,
     ids: &[u32],
     limit: usize,
+    quiet: bool,
 ) -> Result<()> {
     let unused_count = ids.len();
     let printed = if limit > 0 && ids.len() > limit {
@@ -213,6 +219,7 @@ pub fn write_resource_rows(
                 w,
                 &Row {
                     name: r.filename(),
+                    path: index.virt_path(r),
                     resref: &r.resref,
                     restype: r.restype.to_string(),
                     size: r.size,
@@ -221,18 +228,18 @@ pub fn write_resource_rows(
                     module: source.module_root.as_deref(),
                 },
             )?;
+        } else if quiet {
+            writeln!(w, "{}", index.virt_path(r))?;
         } else {
             writeln!(
                 w,
-                "{:<24} {:>10}  {:<13} {}",
-                ctx.out.accent(&r.filename()),
-                r.size,
-                source.kind.as_str(),
-                ctx.out.dim(&source.label)
+                "{}  {:>10}",
+                ctx.out.accent(&index.virt_path(r)),
+                r.size
             )?;
         }
     }
-    if !ctx.out.json && limit > 0 && unused_count > limit {
+    if !ctx.out.json && !quiet && limit > 0 && unused_count > limit {
         writeln!(
             w,
             "{}",

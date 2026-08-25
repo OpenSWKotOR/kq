@@ -27,6 +27,14 @@ pub const ASSET_EXTS: &[&str] = &[
     "tpc", "tga", "dds", "mdl", "mdx", "wav", "bmu", "mp3", "txi", "plt", "fxp",
 ];
 
+/// Never loaded by the engine. Same ResRef as a compiled script does not
+/// mean the source file is used.
+const SOURCE_EXTS: &[&str] = &["nss"];
+
+/// Area/module entry files. A module *folder* (`end_m01aa`) is not a ResRef;
+/// the IFO is always `module.ifo` and the GIT/ARE are often `m01aa.*`.
+const MODULE_ENTRY_EXTS: &[&str] = &["ifo", "are", "git", "lyt", "vis", "pth"];
+
 /// Engine-opened talk files and the include the compiler always sees.
 const ENGINE_ALWAYS: &[&str] = &["dialog", "dialogf", "nwscript"];
 
@@ -200,7 +208,9 @@ pub struct LiveGraph {
     pub catalog: HashSet<String>,
     pub seeds: Vec<String>,
     pub reachable: HashSet<String>,
-    /// Reachable ResRefs plus VO names on used talk-table rows.
+    /// Winner resource indices the live walk actually entered.
+    pub used_ids: HashSet<u32>,
+    /// ResRefs of `used_ids`, plus VO names on used talk-table rows.
     pub used: HashSet<String>,
     pub used_strrefs: HashSet<i64>,
     pub tlk: Vec<TlkRow>,
@@ -218,9 +228,17 @@ impl LiveGraph {
 
 pub fn build(index: &Index) -> Result<LiveGraph> {
     let catalog: HashSet<String> = index.resources.iter().map(|r| r.resref.clone()).collect();
+    let module_roots: HashSet<String> = index
+        .module_roots()
+        .into_iter()
+        .map(|s| s.to_ascii_lowercase())
+        .collect();
 
-    let mut scan_ids: Vec<u32> = (0..index.resources.len() as u32).collect();
-    Filter::dedup_winners(index, &mut scan_ids);
+    let winners = all_winners(index);
+    let by_resref = winners_by_resref(index, &winners);
+    let module_entries = module_entry_ids(index, &winners);
+
+    let mut scan_ids = winners.clone();
     scan_ids.retain(|&i| is_scan_source(index.resources[i as usize].restype));
 
     crate::output::warn(format!(
@@ -229,7 +247,7 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
         scan_ids.len()
     ));
 
-    let hits = Mutex::new(Vec::<(String, HashSet<String>, HashSet<i64>)>::new());
+    let hits = Mutex::new(Vec::<(u32, HashSet<String>, HashSet<i64>)>::new());
     scan_ids.par_iter().for_each(|&i| {
         let r = &index.resources[i as usize];
         let Ok(bytes) = read::read(index, r) else {
@@ -243,6 +261,7 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
         collect(
             &decoded,
             &catalog,
+            &module_roots,
             &r.resref,
             strref_mode(r.restype),
             &mut mentions,
@@ -251,29 +270,29 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
         if !mentions.is_empty() || !strrefs.is_empty() {
             hits.lock()
                 .expect("live scan lock")
-                .push((r.resref.clone(), mentions, strrefs));
+                .push((i, mentions, strrefs));
         }
     });
 
-    let mut edges: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut strrefs_by: HashMap<String, HashSet<i64>> = HashMap::new();
-    for (resref, mentions, strrefs) in hits.into_inner().expect("live scan lock") {
+    let mut edges: HashMap<u32, HashSet<String>> = HashMap::new();
+    let mut strrefs_by: HashMap<u32, HashSet<i64>> = HashMap::new();
+    for (id, mentions, strrefs) in hits.into_inner().expect("live scan lock") {
         if !mentions.is_empty() {
-            edges.entry(resref.clone()).or_default().extend(mentions);
+            edges.insert(id, mentions);
         }
         if !strrefs.is_empty() {
-            strrefs_by.entry(resref).or_default().extend(strrefs);
+            strrefs_by.insert(id, strrefs);
         }
     }
 
-    let seeds = seeds(index, &catalog);
-    let reachable = bfs(&seeds, &edges);
+    let (seed_labels, seed_ids) = seed_ids(index, &catalog, &by_resref, &module_entries);
+    let used_ids = bfs(&seed_ids, &edges, &by_resref, &module_entries);
 
     let tlk = load_dialog_tlk(index)?;
     let tlk_len = tlk.len() as i64;
     let mut used_strrefs = HashSet::new();
-    for r in &reachable {
-        if let Some(refs) = strrefs_by.get(r) {
+    for &id in &used_ids {
+        if let Some(refs) = strrefs_by.get(&id) {
             for &n in refs {
                 if n >= 0 && n < tlk_len {
                     used_strrefs.insert(n);
@@ -282,7 +301,11 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
         }
     }
 
-    let mut used = reachable.clone();
+    let mut used: HashSet<String> = used_ids
+        .iter()
+        .map(|&i| index.resources[i as usize].resref.clone())
+        .collect();
+    let reachable = used.clone();
     for row in &tlk {
         if used_strrefs.contains(&row.strref)
             && !row.sound.is_empty()
@@ -294,8 +317,9 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
 
     Ok(LiveGraph {
         catalog,
-        seeds,
+        seeds: seed_labels,
         reachable,
+        used_ids,
         used,
         used_strrefs,
         tlk,
@@ -305,6 +329,56 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
 
 pub fn is_asset(t: ResType) -> bool {
     ASSET_EXTS.contains(&t.extension().unwrap_or(""))
+}
+
+/// Types omitted from leftover reports unless `-t` or `--assets` is given.
+pub fn is_noise(t: ResType) -> bool {
+    is_asset(t) || SOURCE_EXTS.contains(&t.extension().unwrap_or(""))
+}
+
+fn all_winners(index: &Index) -> Vec<u32> {
+    let mut ids: Vec<u32> = (0..index.resources.len() as u32).collect();
+    ids.sort_by(|&a, &b| {
+        let (ra, rb) = (&index.resources[a as usize], &index.resources[b as usize]);
+        ra.resref
+            .cmp(&rb.resref)
+            .then(ra.restype.cmp(&rb.restype))
+            .then(
+                index.sources[ra.source as usize]
+                    .precedence
+                    .cmp(&index.sources[rb.source as usize].precedence),
+            )
+    });
+    Filter::dedup_winners(index, &mut ids);
+    ids
+}
+
+fn winners_by_resref(index: &Index, winners: &[u32]) -> HashMap<String, Vec<u32>> {
+    let mut map: HashMap<String, Vec<u32>> = HashMap::new();
+    for &i in winners {
+        map.entry(index.resources[i as usize].resref.clone())
+            .or_default()
+            .push(i);
+    }
+    map
+}
+
+fn module_entry_ids(index: &Index, winners: &[u32]) -> HashMap<String, Vec<u32>> {
+    let mut map: HashMap<String, Vec<u32>> = HashMap::new();
+    for &i in winners {
+        let r = &index.resources[i as usize];
+        let Some(ext) = r.restype.extension() else {
+            continue;
+        };
+        if !MODULE_ENTRY_EXTS.contains(&ext) {
+            continue;
+        }
+        let Some(root) = index.source(r).module_root.as_deref() else {
+            continue;
+        };
+        map.entry(root.to_ascii_lowercase()).or_default().push(i);
+    }
+    map
 }
 
 fn is_scan_source(t: ResType) -> bool {
@@ -322,49 +396,79 @@ fn strref_mode(t: ResType) -> StrRefMode {
     }
 }
 
-fn seeds(index: &Index, known: &HashSet<String>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+fn seed_ids(
+    index: &Index,
+    known: &HashSet<String>,
+    by_resref: &HashMap<String, Vec<u32>>,
+    module_entries: &HashMap<String, Vec<u32>>,
+) -> (Vec<String>, Vec<u32>) {
+    let mut labels = Vec::new();
+    let mut ids = Vec::new();
+
+    let push_resref = |name: &str, labels: &mut Vec<String>, ids: &mut Vec<u32>| {
+        let name = name.to_ascii_lowercase();
+        if let Some(list) = by_resref.get(&name) {
+            labels.push(name);
+            ids.extend(list.iter().copied());
+        }
+    };
+    let push_module = |name: &str, labels: &mut Vec<String>, ids: &mut Vec<u32>| {
+        let name = name.to_ascii_lowercase();
+        if let Some(list) = module_entries.get(&name) {
+            labels.push(name);
+            ids.extend(list.iter().copied());
+        }
+    };
+
     match index.kind {
         RootKind::Install => {
             for name in ENGINE_ALWAYS.iter().chain(ENGINE_2DAS) {
-                push_known(&mut out, known, name);
+                push_resref(name, &mut labels, &mut ids);
+            }
+            for name in K1_SCRIPTS {
+                push_resref(name, &mut labels, &mut ids);
             }
             let extra: &[&str] = match index.game {
                 kq_index::Game::K1 => K1_MODULES,
                 kq_index::Game::K2 => K2_MODULES,
             };
-            for name in extra.iter().chain(K1_SCRIPTS) {
-                push_known(&mut out, known, name);
+            for name in extra {
+                push_module(name, &mut labels, &mut ids);
             }
             for name in ini_starting_modules(&index.root) {
-                push_known(&mut out, known, &name);
+                push_module(&name, &mut labels, &mut ids);
+                push_resref(&name, &mut labels, &mut ids);
             }
         }
         RootKind::Capsule | RootKind::Folder | RootKind::File => {
             for r in &index.resources {
                 if matches!(r.restype.extension(), Some("ifo" | "are" | "git")) {
-                    push_known(&mut out, known, &r.resref);
+                    if let Some(list) = by_resref.get(&r.resref) {
+                        labels.push(r.resref.clone());
+                        ids.extend(list.iter().copied());
+                    }
                 }
             }
-            if out.is_empty() {
-                let mut names: Vec<String> =
-                    index.resources.iter().map(|r| r.resref.clone()).collect();
-                names.sort();
-                names.dedup();
-                out = names;
+            if let Some(root) = index
+                .resources
+                .first()
+                .and_then(|r| index.source(r).module_root.as_deref())
+            {
+                push_module(root, &mut labels, &mut ids);
+            }
+            if ids.is_empty() {
+                for name in known {
+                    push_resref(name, &mut labels, &mut ids);
+                }
             }
         }
     }
-    out.sort();
-    out.dedup();
-    out
-}
 
-fn push_known(out: &mut Vec<String>, known: &HashSet<String>, name: &str) {
-    let name = name.to_ascii_lowercase();
-    if known.contains(&name) {
-        out.push(name);
-    }
+    labels.sort();
+    labels.dedup();
+    ids.sort_unstable();
+    ids.dedup();
+    (labels, ids)
 }
 
 fn ini_starting_modules(root: &Path) -> Vec<String> {
@@ -414,21 +518,37 @@ fn load_dialog_tlk(index: &Index) -> Result<Vec<TlkRow>> {
         .collect())
 }
 
-fn bfs(seeds: &[String], edges: &HashMap<String, HashSet<String>>) -> HashSet<String> {
+fn bfs(
+    seeds: &[u32],
+    edges: &HashMap<u32, HashSet<String>>,
+    by_resref: &HashMap<String, Vec<u32>>,
+    module_entries: &HashMap<String, Vec<u32>>,
+) -> HashSet<u32> {
     let mut seen = HashSet::new();
     let mut q = VecDeque::new();
-    for s in seeds {
-        if seen.insert(s.clone()) {
-            q.push_back(s.clone());
+    for &id in seeds {
+        if seen.insert(id) {
+            q.push_back(id);
         }
     }
-    while let Some(n) = q.pop_front() {
-        let Some(outs) = edges.get(&n) else {
+    while let Some(id) = q.pop_front() {
+        let Some(tokens) = edges.get(&id) else {
             continue;
         };
-        for m in outs {
-            if seen.insert(m.clone()) {
-                q.push_back(m.clone());
+        for tok in tokens {
+            if let Some(ids) = by_resref.get(tok) {
+                for &j in ids {
+                    if seen.insert(j) {
+                        q.push_back(j);
+                    }
+                }
+            }
+            if let Some(ids) = module_entries.get(tok) {
+                for &j in ids {
+                    if seen.insert(j) {
+                        q.push_back(j);
+                    }
+                }
             }
         }
     }
@@ -438,47 +558,60 @@ fn bfs(seeds: &[String], edges: &HashMap<String, HashSet<String>>) -> HashSet<St
 fn collect(
     decoded: &Decoded,
     known: &HashSet<String>,
+    module_roots: &HashSet<String>,
     self_ref: &str,
     mode: StrRefMode,
     mentions: &mut HashSet<String>,
     strrefs: &mut HashSet<i64>,
 ) {
     match decoded {
-        Decoded::Value(v) => walk_json(v, known, self_ref, mode, None, mentions, strrefs),
-        Decoded::Text(s) => take_tokens(s, known, self_ref, mentions),
+        Decoded::Value(v) => walk_json(
+            v,
+            &mut Walk {
+                known,
+                module_roots,
+                self_ref,
+                mode,
+                mentions,
+                strrefs,
+            },
+            None,
+        ),
+        Decoded::Text(s) => take_tokens(s, known, module_roots, self_ref, mentions),
         Decoded::Opaque { .. } => {}
     }
 }
 
-fn walk_json(
-    v: &J,
-    known: &HashSet<String>,
-    self_ref: &str,
+struct Walk<'a> {
+    known: &'a HashSet<String>,
+    module_roots: &'a HashSet<String>,
+    self_ref: &'a str,
     mode: StrRefMode,
-    key: Option<&str>,
-    mentions: &mut HashSet<String>,
-    strrefs: &mut HashSet<i64>,
-) {
+    mentions: &'a mut HashSet<String>,
+    strrefs: &'a mut HashSet<i64>,
+}
+
+fn walk_json(v: &J, w: &mut Walk<'_>, key: Option<&str>) {
     match v {
         J::String(s) => {
-            take_tokens(s, known, self_ref, mentions);
-            if matches!(mode, StrRefMode::TwoDa) && key.is_some_and(is_strref_column) {
+            take_tokens(s, w.known, w.module_roots, w.self_ref, w.mentions);
+            if matches!(w.mode, StrRefMode::TwoDa) && key.is_some_and(is_strref_column) {
                 if let Some(n) = parse_strref(s) {
-                    strrefs.insert(n);
+                    w.strrefs.insert(n);
                 }
             }
         }
         J::Number(n) => {
             if let Some(i) = n.as_i64() {
-                match mode {
+                match w.mode {
                     StrRefMode::Ssf => {
-                        strrefs.insert(i);
+                        w.strrefs.insert(i);
                     }
                     StrRefMode::Gff if key.is_some_and(|k| k.eq_ignore_ascii_case("strref")) => {
-                        strrefs.insert(i);
+                        w.strrefs.insert(i);
                     }
                     StrRefMode::TwoDa if key.is_some_and(is_strref_column) => {
-                        strrefs.insert(i);
+                        w.strrefs.insert(i);
                     }
                     _ => {}
                 }
@@ -486,13 +619,13 @@ fn walk_json(
         }
         J::Array(items) => {
             for item in items {
-                walk_json(item, known, self_ref, mode, key, mentions, strrefs);
+                walk_json(item, w, key);
             }
         }
         J::Object(map) => {
             for (k, val) in map {
-                take_tokens(k, known, self_ref, mentions);
-                walk_json(val, known, self_ref, mode, Some(k), mentions, strrefs);
+                take_tokens(k, w.known, w.module_roots, w.self_ref, w.mentions);
+                walk_json(val, w, Some(k));
             }
         }
         _ => {}
@@ -528,7 +661,13 @@ fn parse_strref(s: &str) -> Option<i64> {
     Some(n)
 }
 
-fn take_tokens(s: &str, known: &HashSet<String>, self_ref: &str, out: &mut HashSet<String>) {
+fn take_tokens(
+    s: &str,
+    known: &HashSet<String>,
+    module_roots: &HashSet<String>,
+    self_ref: &str,
+    out: &mut HashSet<String>,
+) {
     let lower = s.to_ascii_lowercase();
     let mut start = None;
     for (i, c) in lower.char_indices() {
@@ -537,24 +676,33 @@ fn take_tokens(s: &str, known: &HashSet<String>, self_ref: &str, out: &mut HashS
                 start = Some(i);
             }
         } else if let Some(st) = start.take() {
-            consider_token(&lower[st..i], known, self_ref, out);
+            consider_token(&lower[st..i], known, module_roots, self_ref, out);
         }
     }
     if let Some(st) = start {
-        consider_token(&lower[st..], known, self_ref, out);
+        consider_token(&lower[st..], known, module_roots, self_ref, out);
     }
 }
 
-fn consider_token(tok: &str, known: &HashSet<String>, self_ref: &str, out: &mut HashSet<String>) {
+fn consider_token(
+    tok: &str,
+    known: &HashSet<String>,
+    module_roots: &HashSet<String>,
+    self_ref: &str,
+    out: &mut HashSet<String>,
+) {
     if tok.is_empty() || tok.len() > 16 || tok == self_ref || tok == "****" {
         return;
     }
-    if known.contains(tok) {
+    if known.contains(tok) || module_roots.contains(tok) {
         out.insert(tok.to_string());
         return;
     }
     if let Some((base, ext)) = tok.rsplit_once('.') {
-        if ResType::from_extension(ext).is_some() && base != self_ref && known.contains(base) {
+        if ResType::from_extension(ext).is_some()
+            && base != self_ref
+            && (known.contains(base) || module_roots.contains(base))
+        {
             out.insert(base.to_string());
         }
     }
@@ -567,10 +715,12 @@ mod tests {
     #[test]
     fn tokens_ignore_self_and_stars() {
         let known = HashSet::from(["n_bastila".into(), "k_ai_master".into(), "danm13".into()]);
+        let roots = HashSet::new();
         let mut out = HashSet::new();
         take_tokens(
             "Tag=n_bastila Script=k_ai_master ****",
             &known,
+            &roots,
             "n_bastila",
             &mut out,
         );
@@ -582,21 +732,59 @@ mod tests {
     #[test]
     fn isolated_cycle_is_not_reachable() {
         let mut edges = HashMap::new();
-        edges.insert("dead_a".into(), HashSet::from(["dead_b".into()]));
-        edges.insert("dead_b".into(), HashSet::from(["dead_a".into()]));
-        edges.insert("end_m01aa".into(), HashSet::from(["n_endsol01".into()]));
-        let seen = bfs(&["end_m01aa".into()], &edges);
-        assert!(seen.contains("end_m01aa"));
-        assert!(seen.contains("n_endsol01"));
-        assert!(!seen.contains("dead_a"));
-        assert!(!seen.contains("dead_b"));
+        edges.insert(1, HashSet::from(["dead_b".into()]));
+        edges.insert(2, HashSet::from(["dead_a".into()]));
+        edges.insert(10, HashSet::from(["n_endsol01".into()]));
+        let mut by_resref = HashMap::new();
+        by_resref.insert("dead_a".into(), vec![1]);
+        by_resref.insert("dead_b".into(), vec![2]);
+        by_resref.insert("n_endsol01".into(), vec![11]);
+        let seen = bfs(&[10], &edges, &by_resref, &HashMap::new());
+        assert!(seen.contains(&10));
+        assert!(seen.contains(&11));
+        assert!(!seen.contains(&1));
+        assert!(!seen.contains(&2));
+    }
+
+    #[test]
+    fn module_folder_enters_git_not_shared_ifo_name() {
+        // end_m01aa is a folder. The GIT is m01aa.git (id 20). Every module
+        // also has a module.ifo; only this module's ifo (id 21) is an entry.
+        let mut edges = HashMap::new();
+        edges.insert(20, HashSet::from(["end_trask".into()]));
+        edges.insert(99, HashSet::from(["other_mod_utc".into()]));
+        let mut by_resref = HashMap::new();
+        by_resref.insert("end_trask".into(), vec![30]);
+        by_resref.insert("other_mod_utc".into(), vec![31]);
+        let mut module_entries = HashMap::new();
+        module_entries.insert("end_m01aa".into(), vec![20, 21]);
+        let seen = bfs(&[20, 21], &edges, &by_resref, &module_entries);
+        assert!(seen.contains(&30));
+        assert!(!seen.contains(&31));
+        assert!(!seen.contains(&99));
+    }
+
+    #[test]
+    fn start_new_module_token_counts_without_resref() {
+        let known = HashSet::new();
+        let roots = HashSet::from(["end_m01aa".into()]);
+        let mut out = HashSet::new();
+        take_tokens(
+            "StartNewModule(\"end_m01aa\")",
+            &known,
+            &roots,
+            "k_sup_gohawk",
+            &mut out,
+        );
+        assert!(out.contains("end_m01aa"));
     }
 
     #[test]
     fn filename_token_counts_as_resref() {
         let known = HashSet::from(["n_bastila".into()]);
+        let roots = HashSet::new();
         let mut out = HashSet::new();
-        take_tokens("n_bastila.utc", &known, "k_ai_master", &mut out);
+        take_tokens("n_bastila.utc", &known, &roots, "k_ai_master", &mut out);
         assert!(out.contains("n_bastila"));
     }
 

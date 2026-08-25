@@ -1,6 +1,6 @@
 {
   "name": "kq",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Query a Knights of the Old Republic installation with the kq CLI. Teaches agents correct flags, resolve order, and decoded-text workflows.",
   "author": {
     "name": "Arren Kaetris",

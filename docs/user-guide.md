@@ -102,8 +102,17 @@ type (`utc`, `dlg`, `2da`, `ncs`, …). Those resources live in:
 `which` shows the whole chain and stars the winner. `ls --winners` and
 `grep --winners` keep only that winner.
 
+Every listed path is relative to the install root. An archive
+(`.mod` / `.rim` / `.erf` / `.bif` / `.hak` / `.sav`) is a folder:
+
+`modules/end_m01aa.mod/end_trask.utc`, `data/2da.bif/appearance.2da`,
+`Override/appearance.2da`. `--from` still matches the container label
+(`end_m01aa.mod`, `data/2da.bif`), not that virtual path.
+
 A *module* is usually `name.rim` + `name_s.rim` + `name_dlg.erf`, or one
-`name.mod` that replaces the trio. Filter with `-m danm13`.
+`name.mod` that replaces the trio. `-m danm13` selects that combined
+root; the `.mod` still overshadows the three pieces, and Override
+overshadows the `.mod`.
 
 ## Command recipes
 
@@ -119,6 +128,13 @@ kq info --json | jq '.resources, .modules'
 
 ```bash
 kq which appearance.2da
+```
+
+```
+* Override/appearance.2da              102106 bytes
+  rims/global.rim/appearance.2da         98610 bytes
+  rims/miniglobal.rim/appearance.2da     98610 bytes
+  data/2da.bif/appearance.2da            98610 bytes
 ```
 
 `*` is the file the engine will open. The other lines are copies that
@@ -160,11 +176,12 @@ kq grep Bastila -t dlg -n 10
 Hits look like:
 
 ```
-22aa_zaalb01_01.dlg 22aa_zaalb01_01.dlg.EntryList[10].Speaker = "Bastila"
+modules/danm13.mod/22aa_zaalb01_01.dlg 22aa_zaalb01_01.dlg.EntryList[10].Speaker = "Bastila"
 ```
 
-The first column is the resource name; the rest is a self-locating field
-path. You can paste that path into a later `jq` query after `--json`.
+The first column is the install-relative path (archive as a folder);
+the rest is a self-locating field path. You can paste that field path
+into a later `jq` query after `--json`.
 
 ### Search compiled scripts
 
@@ -191,6 +208,7 @@ decoded.
 ### What does the game never reach?
 
 ```bash
+kq unused -q                      # every unused path, one per line
 kq unused --summary
 kq unused -t utc
 kq leftovers --summary
@@ -205,12 +223,20 @@ Two commands share one graph:
    columns, SSF events). NCS `CONSTS` strings count, so a script that
    hardcodes a `.dlg` name will mark it.
 3. Seed the graph from names the engine itself opens — talk files, the
-   2DAs hardcoded in the exe, K1 `end_m01aa` / Ebon Hawk / Taris, default
-   `k_def_*` / `k_hen_*` scripts, TSL `001ebo`, plus `StartingModule=` in
-   the ini. **Not** every folder under `modules/`, and **not** `rims/`.
-4. Breadth-first walk. Leftovers are the catalog minus that reachable set.
+   2DAs hardcoded in the exe, default `k_def_*` / `k_hen_*` scripts, plus
+   `StartingModule=` in the ini. A module *folder* is not a ResRef: K1
+   `end_m01aa` enters that module's `module.ifo` and `m01aa.git` (and
+   are/lyt/vis), not a file named `end_m01aa`. `StartNewModule("danm13")`
+   does the same for later areas. **Not** every folder under `modules/`,
+   and **not** `rims/`.
+4. Breadth-first walk over *resource ids*, not shared ResRef strings.
+   Every module has a `module.ifo`; they are not one node. Leftovers are
+   winners the walk never entered. `.nss` is omitted (the engine loads
+   `.ncs`).
 
-`kq unused` prints leftover resources. `kq leftovers` prints leftover
+`kq unused` prints leftover resources — install-relative paths with
+archives as folders (`modules/danm13.mod/foo.utc`). `-q` prints only
+those paths, one per line. `kq leftovers` prints leftover
 talk-table rows (the usual “49k strings, which are unused?” question)
 and a leftover-resource count. `--what resources` is the same list as
 `unused`. `--catalog --json --summary` includes the seed list.

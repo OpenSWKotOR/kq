@@ -1,7 +1,7 @@
 # kq CLI reference
 
 Confirm live flags with `kq --help` and `kq <command> --help`. This file
-matches kq 0.3.1.
+matches kq 0.3.2.
 
 ## Source kinds (`-s`)
 
@@ -23,6 +23,7 @@ kq -i "$KQ_INSTALL" cat appearance.2da --from 'data/2da.bif' -f gron
 kq -i "$KQ_INSTALL" grep Bastila -t dlg -n 10 --json
 kq -i "$KQ_INSTALL" grep --ignore-case GetObjectByTag -t ncs
 kq -i ./modules/danm13.mod ls -t git
+kq -i "$KQ_INSTALL" unused -q
 kq -i "$KQ_INSTALL" unused --summary
 kq -i "$KQ_INSTALL" unused -t utc -n 40
 kq -i "$KQ_INSTALL" leftovers --summary

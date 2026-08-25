@@ -24,6 +24,7 @@ pub struct Args {
 #[derive(Serialize)]
 struct Hit {
     name: String,
+    path: String,
     #[serde(rename = "type")]
     restype: String,
     source: &'static str,
@@ -76,11 +77,12 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         let active = seen_active.insert(r.restype);
         hits.push(Hit {
             name: r.filename(),
+            path: index.virt_path(r),
             restype: r.restype.to_string(),
             source: source.kind.as_str(),
             container: source.label.clone(),
             module: source.module_root.clone(),
-            file: index.file(r).display().to_string(),
+            file: index.rel_file(r),
             offset: r.offset,
             size: r.size,
             active,
@@ -109,11 +111,9 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     for h in &hits {
         let marker = if h.active { o.bold("*") } else { o.dim(" ") };
         println!(
-            "{} {:<22} {:<13} {:<28} {}",
+            "{} {}  {}",
             marker,
-            o.accent(&h.name),
-            h.source,
-            h.container,
+            o.accent(&h.path),
             o.dim(&format!("{} bytes", h.size))
         );
     }

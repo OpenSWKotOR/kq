@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.2
+
+Install-relative paths everywhere: archives (`.mod` / `.rim` / `.erf` /
+`.bif` / …) display as folders (`modules/end_m01aa.mod/m01aa.git`).
+
+Live-graph fixes: nodes are resource ids (not shared ResRef strings),
+modules are entered via `module.ifo` / area GIT (not a fake
+`end_m01aa` ResRef), and composite rim/erf trios share one module root.
+
+`kq unused -q` prints every leftover path, one per line — the pipe-friendly
+list of resources the live graph never reaches.
+
 ## 0.3.1
 
 Standalone installer one-liners (`curl | sh`, `wget`, `irm | iex`), matching

@@ -9,9 +9,9 @@ questions about a source tree and `jq` answers questions about JSON.
 
 ```
 $ kq -i ~/kotor which appearance.2da
-* appearance.2da         override      Override                     103273 bytes
-  appearance.2da         rims          global.rim                   98610 bytes
-  appearance.2da         chitin        data/2da.bif                 98610 bytes
+* Override/appearance.2da              103273 bytes
+  rims/global.rim/appearance.2da        98610 bytes
+  data/2da.bif/appearance.2da           98610 bytes
 ```
 
 The starred line is the copy the game actually loads. Everything below it is
@@ -222,6 +222,7 @@ mention graph, then print what the engine never reaches — leftover
 **strings** by default.
 
 ```bash
+kq unused -q                      # every unused path, one per line
 kq unused --summary
 kq unused -t utc -n 40
 kq leftovers --summary
