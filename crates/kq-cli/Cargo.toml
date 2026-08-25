@@ -1,0 +1,21 @@
+[package]
+name = "kq-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "kq: query a KotOR installation like it was plain text."
+
+[[bin]]
+name = "kq"
+path = "src/main.rs"
+
+[dependencies]
+kq-format = { path = "../kq-format" }
+kq-index = { path = "../kq-index" }
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+memmap2 = { workspace = true }
+regex = "1"

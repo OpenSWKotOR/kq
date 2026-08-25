@@ -1,0 +1,13 @@
+[package]
+name = "kq-format"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Readers for BioWare Aurora/Odyssey container and data formats."
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+serde_json = { workspace = true }
+base64 = "0.22"

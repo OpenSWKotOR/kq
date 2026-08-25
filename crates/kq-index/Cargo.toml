@@ -1,0 +1,17 @@
+[package]
+name = "kq-index"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Discovers a KotOR installation and indexes every resource in it."
+
+[dependencies]
+kq-format = { path = "../kq-format" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+memmap2 = { workspace = true }
+rayon = { workspace = true }
+rmp-serde = "1"
+twox-hash = "2"
+dirs = "6"
