@@ -190,5 +190,24 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
 /// other type — textures, models, audio, scripts pending a decompiler — is
 /// skipped so a plain `kq grep` does not read gigabytes of pixels.
 fn is_searchable(t: kq_format::ResType) -> bool {
-    t.is_gff() || t.is_plain_text() || matches!(t.extension(), Some("2da" | "tlk"))
+    t.is_gff()
+        || t.is_plain_text()
+        || matches!(
+            t.extension(),
+            Some(
+                "2da"
+                    | "tlk"
+                    | "ssf"
+                    | "lip"
+                    | "ncs"
+                    | "ltr"
+                    | "tpc"
+                    | "mdl"
+                    | "wok"
+                    | "dwk"
+                    | "pwk"
+                    | "wav"
+                    | "bmu"
+            )
+        )
 }

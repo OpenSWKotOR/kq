@@ -4,17 +4,26 @@
 //! memory-map once and parse without copying, and so errors name their file.
 
 pub mod bif;
+pub mod bwm;
 pub mod container;
 pub mod erf;
 pub mod error;
 pub mod gff;
 pub mod key;
+pub mod lip;
+pub mod ltr;
+pub mod mdl;
+pub mod ncs;
+pub mod ncs_actions;
 pub mod reader;
 pub mod restype;
 pub mod rim;
+pub mod ssf;
 pub mod text;
 pub mod tlk;
+pub mod tpc;
 pub mod twoda;
+pub mod wav;
 
 pub use container::{ContainerKind, Entry};
 pub use error::{FormatError, Result};

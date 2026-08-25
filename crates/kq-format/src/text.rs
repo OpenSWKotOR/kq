@@ -13,9 +13,17 @@
 use base64::Engine as _;
 use serde_json::{json, Map, Value as J};
 
+use crate::bwm::Bwm;
 use crate::gff::{Gff, Struct, Value};
+use crate::lip::Lip;
+use crate::ltr::{Ltr, LETTERS};
+use crate::mdl::Mdl;
+use crate::ncs::{Arg, Ncs};
+use crate::ssf::{Ssf, EVENTS};
 use crate::tlk::Tlk;
+use crate::tpc::Tpc;
 use crate::twoda::TwoDa;
+use crate::wav::Wav;
 
 // ---------------------------------------------------------------- to JSON --
 
@@ -112,6 +120,161 @@ pub fn tlk_to_json(t: &Tlk) -> J {
         })
         .collect();
     J::Array(entries)
+}
+
+/// Convert a sound set to a JSON object keyed by event name.
+pub fn ssf_to_json(s: &Ssf) -> J {
+    let mut m = Map::with_capacity(EVENTS.len());
+    for (name, &strref) in EVENTS.iter().zip(s.sounds.iter()) {
+        m.insert((*name).to_string(), json!(strref));
+    }
+    J::Object(m)
+}
+
+/// Convert lip-sync keyframes to a JSON object with the total length and the
+/// keyframe array.
+pub fn lip_to_json(l: &Lip) -> J {
+    let keyframes: Vec<J> = l
+        .keyframes
+        .iter()
+        .map(|k| json!({ "time": k.time, "shape": k.shape.0 }))
+        .collect();
+    json!({ "length": l.length, "keyframes": keyframes })
+}
+
+/// Convert compiled NWScript to a JSON array of located instructions.
+pub fn ncs_to_json(n: &Ncs) -> J {
+    let instructions: Vec<J> = n
+        .instructions
+        .iter()
+        .map(|ins| {
+            let mut m = Map::new();
+            m.insert("offset".into(), json!(ins.offset));
+            m.insert("op".into(), json!(ins.op));
+            if let Some(routine) = ins.routine {
+                m.insert("routine".into(), json!(routine));
+            }
+            if let Some(name) = ins.routine_name {
+                m.insert("name".into(), json!(name));
+            }
+            if let Some(argc) = ins.argc {
+                m.insert("argc".into(), json!(argc));
+            }
+            if !ins.args.is_empty() && ins.routine.is_none() {
+                let args: Vec<J> = ins
+                    .args
+                    .iter()
+                    .map(|a| match a {
+                        Arg::Int(i) => json!(i),
+                        Arg::Float(f) => json!(f),
+                        Arg::Str(s) => json!(s),
+                        Arg::Jump(t) => json!({ "jump": t }),
+                    })
+                    .collect();
+                m.insert("args".into(), J::Array(args));
+            }
+            J::Object(m)
+        })
+        .collect();
+    json!({ "declared_size": n.declared_size, "instructions": instructions })
+}
+
+/// Convert a texture header (and its trailing TXI) to JSON. Pixels stay out.
+pub fn tpc_to_json(t: &Tpc) -> J {
+    let mut m = Map::new();
+    m.insert("width".into(), json!(t.width));
+    m.insert("height".into(), json!(t.height));
+    m.insert("format".into(), json!(t.format_name()));
+    m.insert("mipmaps".into(), json!(t.mipmaps));
+    m.insert("alpha_test".into(), json!(t.alpha_test));
+    m.insert("cube_map".into(), json!(t.cube_map));
+    if !t.txi.is_empty() {
+        m.insert("txi".into(), json!(t.txi));
+    }
+    J::Object(m)
+}
+
+/// Convert a walkmesh to JSON: hooks, vertices, faces, materials.
+pub fn bwm_to_json(w: &Bwm) -> J {
+    let v3 = |v: &crate::bwm::Vec3| json!([v.x, v.y, v.z]);
+    let vertices: Vec<J> = w.vertices.iter().map(v3).collect();
+    let faces: Vec<J> = w
+        .faces
+        .iter()
+        .map(|f| {
+            let mut m = Map::new();
+            m.insert("v".into(), json!(f.vertices));
+            m.insert("material".into(), json!(f.material));
+            if f.transitions.iter().any(|t| t.is_some()) {
+                m.insert("transitions".into(), json!(f.transitions));
+            }
+            J::Object(m)
+        })
+        .collect();
+    json!({
+        "type": w.walkmesh_type,
+        "position": v3(&w.position),
+        "relative_hook1": v3(&w.relative_hook1),
+        "relative_hook2": v3(&w.relative_hook2),
+        "absolute_hook1": v3(&w.absolute_hook1),
+        "absolute_hook2": v3(&w.absolute_hook2),
+        "vertices": vertices,
+        "faces": faces,
+    })
+}
+
+/// Convert the single-letter name-generation table. Doubles/triples are
+/// parsed for validity and then dropped — they are not greppable content.
+pub fn ltr_to_json(l: &Ltr) -> J {
+    let singles: Vec<J> = l
+        .singles
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let ch = LETTERS.get(i).copied().unwrap_or(b'?') as char;
+            json!({
+                "letter": ch.to_string(),
+                "start": c.start,
+                "middle": c.middle,
+                "end": c.end,
+            })
+        })
+        .collect();
+    json!({ "letters": l.letter_count, "singles": singles })
+}
+
+/// Convert a model inventory — names, not vertices.
+pub fn mdl_to_json(m: &Mdl) -> J {
+    json!({
+        "name": m.name,
+        "supermodel": m.supermodel,
+        "classification": m.classification,
+        "node_count": m.node_count,
+        "names": m.names,
+        "animations": m.animations,
+    })
+}
+
+/// Convert audio metadata. Samples stay out.
+pub fn wav_to_json(w: &Wav) -> J {
+    let mut m = Map::new();
+    m.insert("kind".into(), json!(w.kind));
+    if let Some(c) = w.channels {
+        m.insert("channels".into(), json!(c));
+    }
+    if let Some(r) = w.sample_rate {
+        m.insert("sample_rate".into(), json!(r));
+    }
+    if let Some(b) = w.bits_per_sample {
+        m.insert("bits_per_sample".into(), json!(b));
+    }
+    if let Some(e) = w.encoding {
+        m.insert("encoding".into(), json!(e));
+    }
+    if let Some(n) = w.data_bytes {
+        m.insert("data_bytes".into(), json!(n));
+    }
+    J::Object(m)
 }
 
 // ------------------------------------------------------------------ gron --

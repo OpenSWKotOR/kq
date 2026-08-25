@@ -91,12 +91,38 @@ impl<'a> Reader<'a> {
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
 
+    pub fn i16(&mut self) -> Result<i16> {
+        Ok(self.u16()? as i16)
+    }
+
     pub fn i32(&mut self) -> Result<i32> {
         Ok(self.u32()? as i32)
     }
 
     pub fn f32(&mut self) -> Result<f32> {
         Ok(f32::from_bits(self.u32()?))
+    }
+
+    pub fn u16_be(&mut self) -> Result<u16> {
+        let b = self.take(2)?;
+        Ok(u16::from_be_bytes([b[0], b[1]]))
+    }
+
+    pub fn i16_be(&mut self) -> Result<i16> {
+        Ok(self.u16_be()? as i16)
+    }
+
+    pub fn u32_be(&mut self) -> Result<u32> {
+        let b = self.take(4)?;
+        Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    pub fn i32_be(&mut self) -> Result<i32> {
+        Ok(self.u32_be()? as i32)
+    }
+
+    pub fn f32_be(&mut self) -> Result<f32> {
+        Ok(f32::from_bits(self.u32_be()?))
     }
 
     /// Read a fixed-width, NUL-padded field such as a 16-byte ResRef.

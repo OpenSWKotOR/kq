@@ -8,7 +8,7 @@
 use anyhow::Result;
 use serde_json::Value as J;
 
-use kq_format::{gff, text, tlk, twoda, ResType};
+use kq_format::{bwm, gff, lip, ltr, mdl, ncs, ssf, text, tlk, tpc, twoda, wav, ResType};
 
 /// How to print a decoded resource.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -49,6 +49,39 @@ pub fn decode(bytes: &[u8], restype: Option<ResType>, name: &str) -> Result<Deco
     if tlk::sniff(bytes) {
         let t = tlk::read(bytes, path)?;
         return Ok(Decoded::Value(text::tlk_to_json(&t)));
+    }
+    if ssf::sniff(bytes) {
+        let s = ssf::read(bytes, path)?;
+        return Ok(Decoded::Value(text::ssf_to_json(&s)));
+    }
+    if lip::sniff(bytes) {
+        let l = lip::read(bytes, path)?;
+        return Ok(Decoded::Value(text::lip_to_json(&l)));
+    }
+    if ncs::sniff(bytes) {
+        let n = ncs::read(bytes, path)?;
+        return Ok(Decoded::Value(text::ncs_to_json(&n)));
+    }
+    if bwm::sniff(bytes) {
+        let w = bwm::read(bytes, path)?;
+        return Ok(Decoded::Value(text::bwm_to_json(&w)));
+    }
+    if ltr::sniff(bytes) {
+        let l = ltr::read(bytes, path)?;
+        return Ok(Decoded::Value(text::ltr_to_json(&l)));
+    }
+    if wav::sniff(bytes) {
+        let w = wav::read(bytes, path)?;
+        return Ok(Decoded::Value(text::wav_to_json(&w)));
+    }
+    // TPC and binary MDL have no reliable magic. Restype is the hint.
+    if restype.is_some_and(|t| t.extension() == Some("tpc")) && tpc::sniff(bytes) {
+        let t = tpc::read(bytes, path)?;
+        return Ok(Decoded::Value(text::tpc_to_json(&t)));
+    }
+    if restype.is_some_and(|t| t.extension() == Some("mdl")) && mdl::sniff(bytes) {
+        let m = mdl::read(bytes, path)?;
+        return Ok(Decoded::Value(text::mdl_to_json(&m)));
     }
     if restype.is_some_and(ResType::is_plain_text) || looks_like_text(bytes) {
         return Ok(Decoded::Text(decode_cp1252(bytes)));

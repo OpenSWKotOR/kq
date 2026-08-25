@@ -1,156 +1,290 @@
-# cleanhouse — `kq`
+# kq
 
-Query a KotOR installation like it was plain text.
+**Query a Knights of the Old Republic installation like it was plain text.**
 
-`kq` reads a *Star Wars: Knights of the Old Republic* installation — its
-archives, modules and loose files — and answers questions about it, the way
-`rg` answers questions about a source tree. It knows nothing about game
-*data*; it knows the container formats (KEY, BIF, ERF, RIM) and the common
-resource formats (GFF, 2DA, TLK) well enough to show you what's inside them
-without you extracting anything first.
+`kq` is a command-line tool that treats a KotOR (or KotOR II) game folder as
+structured, searchable data. It reads the game's archives in place — you do
+not extract anything first — and answers questions the way `rg` answers
+questions about a source tree and `jq` answers questions about JSON.
 
 ```
 $ kq -i ~/kotor which appearance.2da
 * appearance.2da         override      Override                     103273 bytes
   appearance.2da         rims          global.rim                   98610 bytes
-  appearance.2da         rims          miniglobal.rim               98610 bytes
   appearance.2da         chitin        data/2da.bif                 98610 bytes
-
-* is the copy the game loads; the rest are shadowed.
 ```
 
-That's the thing KotOR modding gets wrong constantly: which copy of a
-resource actually loads, out of everywhere it might be shadowed. `kq which`
-answers it directly instead of making you reconstruct the search order by
-hand.
+The starred line is the copy the game actually loads. Everything below it is
+shadowed. That question is what KotOR modding gets wrong most often; `kq which`
+answers it directly.
+
+Full walkthrough, recipes, and format notes: **[User guide](docs/user-guide.md)**.
+
+---
+
+## What this is
+
+A KotOR install is not a folder of files you can grep. Creature templates live
+inside `.mod` archives, dialogue lives in GFF trees, strings live in
+`dialog.tlk`, scripts are compiled bytecode, and the same name can exist in
+five places with only one of them loading.
+
+`kq` walks that layout, builds an index of every resource, and decodes the
+formats it understands into text:
+
+- **list** what the install contains (`kq ls`)
+- **resolve** which copy of a name the game would load (`kq which`)
+- **print** a resource as a readable tree, as `path = value` lines, or as JSON
+  (`kq cat`)
+- **search** decoded contents with a regex (`kq grep`)
+
+It is not a save editor, a compiler, a GUI, or a replacement for the Holocron
+Toolset. It is the `rg`/`jq` of a KotOR install.
+
+---
 
 ## Install
 
-```
+You need a Rust toolchain **1.82 or newer** ([rustup](https://rustup.rs/)).
+
+```bash
+git clone https://github.com/arrenkaetris/kq.git
+cd kq
 cargo build --release
 ./target/release/kq --help
 ```
 
-One binary, no interpreter or game-specific runtime — just the system's
-usual dynamic libraries, like any other native tool.
+Put `target/release/kq` somewhere on your `PATH` if you want `kq` as a
+normal command. There is no installer and no extra runtime — one native
+binary, plus the system's usual dynamic libraries.
 
-## The five commands
+KotOR / KotOR II themselves are **not** bundled. Point `kq` at an install you
+already have.
 
-Point every command at an install with `-i`/`--install`, the `KQ_INSTALL`
-environment variable, or just run `kq` from inside one — it walks upward
-looking for `chitin.key`, the way `git` walks upward looking for `.git`.
+---
 
-- **`kq info`** — what's in this installation: game, resource counts, a
-  breakdown by source or by type.
-- **`kq ls [pattern]`** — list resources. Bare text is a substring match;
-  `*`/`?` are globs. Filter with `-t utc`, `-m danm13`, `-s override`.
-- **`kq which <resref>`** — show every copy of a resource, in the order the
-  game resolves them, marking the one that actually loads.
-- **`kq cat <resref>`** — decode a resource to text. GFF-family formats
-  (`.utc`, `.dlg`, `.are`, `.git`, `.ifo`, …), 2DA and TLK all decode; plain
-  text formats (`.nss`, `.lyt`, `.vis`, `.txi`) pass through as-is.
-- **`kq grep <pattern>`** — search decoded resource contents with a regex.
+## Point it at a game
 
-Every command takes `--json` for scripting and a stable, documented exit
-code: `0` matched/succeeded, `1` a runtime error, `3` the query was valid but
-matched nothing, `4` no installation or path could be resolved. (`2` is
-reserved for a bad command line — clap owns that one before your code ever
-runs.)
+Every command needs a target. In order:
 
-## Reading a resource
+1. `-i` / `--install <path>`
+2. the `KQ_INSTALL` environment variable
+3. walking upward from the current directory looking for `chitin.key`
+   (the same idea as `git` walking upward for `.git`)
 
-```
-$ kq cat bastila00c.utc
-TemplateResRef              "bastila00c"
-Race                        6
-FirstName (1 fields)
-  strref                     31360
-Appearance_Type              4
-Tag                          "Bastila"
-Conversation                 "k_hbas_dialog"
-...
+```bash
+kq -i ~/kotor info
+export KQ_INSTALL=~/kotor
+kq ls -t utc -n 20
+cd ~/kotor/Override && kq which appearance.2da
 ```
 
-Add `-f gron` for one `path = value` line per field instead of a tree — each
-line stands alone, so it survives being piped through `grep`/`rg`:
+`-i` is not limited to a full install. The same commands work on a single
+file, a standalone capsule, or a folder of loose resources:
 
-```
-$ kq cat bastila00c.utc -f gron | grep Tag
-bastila00c.utc.Tag = "Bastila"
-```
-
-Add `--json` for the same tree as JSON, for `jq`.
-
-## Searching
-
-```
-$ kq grep 'Bastila' -t dlg -n 5
-22aa_zaalb01_01.dlg 22aa_zaalb01_01.dlg.EntryList[10].Speaker = "Bastila"
-22aa_zaalb01_01.dlg 22aa_zaalb01_01.dlg.EntryList[11].Speaker = "Bastila"
-...
+```bash
+kq -i somefile.utc cat somefile
+kq -i danm13.mod ls
+kq -i ./extracted_override/ grep Bastila
 ```
 
-`kq grep` decodes each candidate resource the same way `kq cat -f gron`
-would, then matches the pattern line by line — so a hit's address is a real
-field path, not a meaningless byte offset into a binary blob. (That
-distinction matters: piping binary formats through `rg --pre` destroys real
-offsets, because `rg` numbers lines and bytes in the *preprocessor's output*,
-not the original file. Every `kq grep` hit carries its own address instead of
-relying on one.)
+A directory *inside* an install (`-i Override` from the game root) still
+means the whole install. A named *file* never does: `-i modules/danm13.mod`
+means that one archive.
 
-By default `grep` only reads resource types it can actually decode to text
-(GFF, 2DA, TLK, and formats that are already plain text) — skipping the
-~25,000 textures, models and sounds in a typical install. Pass
-`--include-binary` to search everything else as raw bytes too (useful for
-finding an embedded ASCII string constant inside an `.ncs` script, for
-example).
+---
 
-## Beyond a full installation
+## Commands
 
-Every command works the same way against a single resource file, a
-standalone capsule, or a folder of loose files — not just a full
-installation:
+### `kq info`
 
-```
-kq -i somefile.utc cat somefile          # one resource, no install needed
-kq -i danm13.mod ls                      # everything inside one capsule
-kq -i ./extracted_override/ grep Bastila # a folder of loose files
+Summarize the target: game, resource counts, containers, modules.
+
+```bash
+kq info
+kq info --by-type
+kq info --json
 ```
 
-## Caching
+### `kq ls [pattern]`
 
-Indexing a retail install means reading the header of every archive in
-it — a few hundred files. The result is cached under `$KQ_CACHE_DIR` (or the
-platform cache directory) and invalidated automatically when the
-installation's file listing changes (name, size, and modification time —
-not content, so a 1.3&nbsp;GB set of BIFs isn't hashed on every run). Pass
-`--no-cache` to skip it entirely, or `--refresh` to force a rebuild.
+List resources. Bare text is a substring of the ResRef; `*` and `?` are
+globs.
 
-Standalone targets (a lone file, capsule, or folder) are never cached —
-each of those is already a single fast parse.
+```bash
+kq ls bastila
+kq ls 'k_ai_*' -t ncs
+kq ls -t utc -m danm13 --winners
+kq ls -s override -q          # names only
+kq ls -n 20                   # first 20
+```
 
-## What's inside
+Filters (also work on `grep`):
 
-Three crates:
+| Flag | Meaning |
+|------|---------|
+| `-t`, `--type utc` | resource type (repeatable) |
+| `-m`, `--module danm13` | module root (repeatable) |
+| `-s`, `--source override` | source kind (repeatable) |
+| `--winners` | only the copy the game would load |
 
-- **`kq-format`** — readers for the on-disk formats: KEY, BIF, ERF, RIM
-  (containers), GFF, 2DA, TLK (data). No I/O beyond taking a byte slice; a
-  caller mmaps or reads the file. Structural output is validated byte-exact
-  against [PyKotor](https://github.com/OpenKotOR/PyKotor)'s readers.
-- **`kq-index`** — discovers an installation (or a standalone target),
-  builds the full resource index respecting KotOR's search-order precedence
-  (Override beats a `.mod` beats the `.rim` trio beats a texture pack beats
-  the base `chitin.key` BIFs), and caches it.
-- **`kq-cli`** — the `kq` binary.
+Source kinds: `override`, `module-mod`, `module-rim`, `lips`,
+`texturepack`, `rims`, `stream`, `chitin`, `talktable`, `loose`
+(standalone files and folders).
 
-## What isn't here yet
+### `kq which <resref>`
 
-Scope, deliberately: a representation of an installation, a file, a folder,
-a capsule, or a module — decoded to text wherever a decoder exists.
+Show every copy of a name, in engine resolve order. `*` marks the winner.
 
-Not yet decoded to text: `.ncs` (script bytecode — the bytes are readable
-with `--include-binary`, but there's no disassembler/decompiler here),
-`.mdl`/`.mdx` (model geometry), `.tpc`/`.tga`/`.dds` (textures), audio. Each
-of those either has no natural text form or is a substantial project of its
-own; `kq cat` says so explicitly (`no text form yet`) rather than silently
-dumping bytes.
+```bash
+kq which appearance.2da
+kq which n_bastila -t utc
+```
+
+### `kq cat <resref>`
+
+Print a resource as text. Default is an indented outline.
+
+```bash
+kq cat bastila00c.utc
+kq cat appearance.2da -f gron
+kq cat dialog.tlk --json
+kq cat k_ai_master.ncs -f outline
+kq cat n_bastila.utc --from Override
+kq cat appearance.2da --raw > appearance.2da
+```
+
+Formats (`-f`):
+
+| Value | What you get |
+|-------|----------------|
+| `outline` | indented tree, for reading (default) |
+| `gron` | one `path = value` line per leaf — safe to pipe through `rg` |
+| `json` | the same tree as JSON, for `jq` |
+| `raw` | exact bytes (`--raw` is the same) |
+
+`--json` on the command itself is a global flag and also selects JSON
+output.
+
+### `kq grep <pattern>`
+
+Search decoded resource contents. Each hit is a field path, not a byte
+offset into a binary blob.
+
+```bash
+kq grep Bastila -t dlg -n 5
+kq grep --ignore-case 'getobjectbytag' -t ncs
+kq grep -F 'cdx_il' -t ncs
+kq grep 'proceduretype' -t tpc -l
+```
+
+There is no `-i` for case-insensitive match: `-i` is already `--install`.
+Use `--ignore-case`.
+
+By default `grep` only reads types it can decode. `--include-binary` also
+searches everything else as raw bytes (slow on a full texture pack).
+
+### `kq cache`
+
+```bash
+kq cache status
+kq cache clear
+```
+
+---
+
+## How it works
+
+1. **Discover.** Find `chitin.key`, then the usual folders (`data/`,
+   `modules/`, `Override/`, `lips/`, `texturepacks/`, `rims/`, stream
+   directories) and `dialog.tlk` at the install root.
+2. **Index.** Read every archive header and every loose file. Each resource
+   becomes a `(name, type, file, offset, size, source)` row. Sources are
+   ordered the way the engine resolves them: Override beats a `.mod` beats
+   the `.rim` / `_s.rim` / `_dlg.erf` trio beats lips, texture packs,
+   `rims/`, streams, then the base `chitin.key` BIFs.
+3. **Cache.** The index is written under `$KQ_CACHE_DIR` or the platform
+   cache directory (`~/.cache/kq` on Linux). The cache key is a fingerprint
+   of names, sizes and mtimes — not file contents — so a 1.3 GB set of BIFs
+   is not hashed on every run. `--refresh` rebuilds and replaces the cache;
+   `--no-cache` skips it. Standalone files/folders are never cached.
+4. **Decode.** `cat` and `grep` memory-map the owning file, slice out the
+   resource, and project it to text. Format is chosen by sniffing bytes, not
+   by extension (a `.utc` and a `.dlg` are both GFF).
+
+A module in this index is the usual trio: `name.rim` + `name_s.rim` +
+`name_dlg.erf`, or a single `name.mod` that replaces them.
+
+---
+
+## What decodes to text
+
+| Kind | Extensions | What you see |
+|------|------------|----------------|
+| GFF | `utc` `utd` `ute` `uti` `utm` `utp` `uts` `utt` `utw` `dlg` `are` `git` `ifo` `jrl` `gui` `pth` `fac` … | field tree |
+| 2DA | `2da` | rows as objects, row label in `_row` |
+| TLK | `tlk` | `strref` + `text` (+ `sound` when present) |
+| SSF | `ssf` | 28 named creature sound-event StrRefs |
+| LIP | `lip` | duration + mouth-shape keyframes |
+| NCS | `ncs` | disassembly: opcode, args, `GetObjectByTag`-style ACTION names |
+| LTR | `ltr` | single-letter name-generation probabilities |
+| BWM | `wok` `dwk` `pwk` | vertices, faces, materials, area-transition edges |
+| TPC | `tpc` | size, format, mipmaps, trailing TXI text (not pixels) |
+| MDL | `mdl` | name, supermodel, node names, animation names (not a mesh dump) |
+| WAV | `wav` `bmu` | kind, rate, channels (not samples) |
+| Already text | `nss` `lyt` `vis` `txi` `ini` `txt` | passed through |
+
+Containers (`key` `bif` `erf` `mod` `sav` `rim` `hak`) are indexed, not
+printed as a blob — `kq ls` lists what is inside them.
+
+TGA, DDS and other still-opaque types print
+`<type, N bytes, no text form yet>` unless you use `--raw` or
+`grep --include-binary`.
+
+NCS is a **disassembler**, not an NSS decompiler. Scripts become located
+instructions you can grep (`….instructions[123].name = "GetObjectByTag"`),
+not recovered source.
+
+---
+
+## Scripting
+
+`--json` on any command. `ls` and `grep` emit one JSON object per line
+(JSONL). `info`, `which` and `cache` emit one object.
+
+Exit codes (stable; scripts should branch on these, not on stderr text):
+
+| Code | Meaning |
+|------|---------|
+| 0 | succeeded / matched |
+| 1 | runtime error (I/O, truncated file, …) |
+| 2 | bad command line (clap) |
+| 3 | valid query, nothing matched |
+| 4 | no install or path could be resolved |
+
+Broken pipes (`kq ls | head`) are silent success, not an error.
+
+---
+
+## Environment
+
+| Variable | Role |
+|----------|------|
+| `KQ_INSTALL` | default target path (same as `--install`) |
+| `KQ_CACHE_DIR` | where index files are stored |
+
+---
+
+## What this is not
+
+- Not a writer. `kq` does not patch, compile, or pack archives.
+- Not a decompiler. NCS is disassembled; it is not turned back into NSS.
+- Not an image or audio exporter. TPC/WAV metadata only.
+- Not a Windows-only tool. It is an ordinary Rust CLI; it does not launch
+  the game.
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE).
