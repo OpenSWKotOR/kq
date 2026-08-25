@@ -21,7 +21,10 @@ pub enum Value {
     /// data, and keeping them apart would only complicate every query.
     Str(String),
     /// A localized string: a talk-table reference plus any inline overrides.
-    LocString { strref: i64, substrings: BTreeMap<u32, String> },
+    LocString {
+        strref: i64,
+        substrings: BTreeMap<u32, String>,
+    },
     /// Raw bytes, kept as-is.
     Void(Vec<u8>),
     Struct(Struct),
@@ -42,7 +45,10 @@ pub struct Struct {
 
 impl Struct {
     pub fn get(&self, label: &str) -> Option<&Value> {
-        self.fields.iter().find(|(k, _)| k.eq_ignore_ascii_case(label)).map(|(_, v)| v)
+        self.fields
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(label))
+            .map(|(_, v)| v)
     }
 }
 
@@ -67,8 +73,12 @@ const MAX_DEPTH: usize = 64;
 
 pub fn read(data: &[u8], path: &Path) -> Result<Gff> {
     let mut r = Reader::new(data, path);
-    let file_type = String::from_utf8_lossy(r.slice_at(0, 4)?).trim().to_string();
-    let version = String::from_utf8_lossy(r.slice_at(4, 4)?).trim().to_string();
+    let file_type = String::from_utf8_lossy(r.slice_at(0, 4)?)
+        .trim()
+        .to_string();
+    let version = String::from_utf8_lossy(r.slice_at(4, 4)?)
+        .trim()
+        .to_string();
     if version != "V3.2" && version != "V3.3" {
         return Err(FormatError::BadVersion {
             path: path.to_path_buf(),
@@ -104,7 +114,11 @@ pub fn read(data: &[u8], path: &Path) -> Result<Gff> {
         return Err(ctx.r.malformed("GFF has no structs"));
     }
     let root = read_struct(&mut ctx, 0, 0)?;
-    Ok(Gff { file_type, version, root })
+    Ok(Gff {
+        file_type,
+        version,
+        root,
+    })
 }
 
 struct Header {
@@ -130,10 +144,14 @@ struct Ctx<'a> {
 
 fn read_struct(ctx: &mut Ctx, index: usize, depth: usize) -> Result<Struct> {
     if depth > MAX_DEPTH {
-        return Err(ctx.r.malformed(format!("struct nesting deeper than {MAX_DEPTH}")));
+        return Err(ctx
+            .r
+            .malformed(format!("struct nesting deeper than {MAX_DEPTH}")));
     }
     if index >= ctx.h.struct_count {
-        return Err(ctx.r.malformed(format!("struct index {index} out of range")));
+        return Err(ctx
+            .r
+            .malformed(format!("struct index {index} out of range")));
     }
     ctx.r.seek(ctx.h.struct_offset + index * 12)?;
     let id = ctx.r.u32()?;
@@ -147,7 +165,8 @@ fn read_struct(ctx: &mut Ctx, index: usize, depth: usize) -> Result<Struct> {
     } else {
         let mut v = Vec::with_capacity(field_count);
         for i in 0..field_count {
-            ctx.r.seek(ctx.h.field_indices_offset + data_or_offset + i * 4)?;
+            ctx.r
+                .seek(ctx.h.field_indices_offset + data_or_offset + i * 4)?;
             v.push(ctx.r.u32()? as usize);
         }
         v
@@ -292,9 +311,9 @@ pub fn cp1252_char(b: u8) -> char {
     const HIGH: [char; 32] = [
         '\u{20AC}', '\u{81}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}',
         '\u{2021}', '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{8D}',
-        '\u{017D}', '\u{8F}', '\u{90}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}',
-        '\u{2022}', '\u{2013}', '\u{2014}', '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}',
-        '\u{0153}', '\u{9D}', '\u{017E}', '\u{0178}',
+        '\u{017D}', '\u{8F}', '\u{90}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}',
+        '\u{2013}', '\u{2014}', '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}', '\u{0153}',
+        '\u{9D}', '\u{017E}', '\u{0178}',
     ];
     if (0x80..0xA0).contains(&b) {
         HIGH[(b - 0x80) as usize]

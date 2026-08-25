@@ -5,7 +5,8 @@ use std::io::{BufWriter, Write};
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::{exit, glob, Ctx};
+use crate::filter::Filter;
+use crate::{exit, Ctx};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -13,18 +14,8 @@ pub struct Args {
     #[arg(value_name = "PATTERN")]
     pattern: Option<String>,
 
-    /// Only this resource type, e.g. `utc`, `2da`, `dlg`. Repeatable.
-    #[arg(short = 't', long = "type", value_name = "EXT")]
-    types: Vec<String>,
-
-    /// Only resources from this module root, e.g. `danm13`. Repeatable.
-    #[arg(short = 'm', long = "module", value_name = "ROOT")]
-    modules: Vec<String>,
-
-    /// Only this source kind: override, module-mod, module-rim, lips,
-    /// texturepack, rims, stream, chitin.
-    #[arg(short = 's', long = "source", value_name = "KIND")]
-    sources: Vec<String>,
+    #[command(flatten)]
+    filter: Filter,
 
     /// Show only the copy the game would actually load.
     #[arg(long)]
@@ -56,62 +47,11 @@ struct Row<'a> {
 pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let (_install, index) = ctx.index()?;
 
-    let want_types: Vec<kq_format::ResType> = args
-        .types
-        .iter()
-        .filter_map(|t| kq_format::ResType::from_extension(t))
-        .collect();
-    if want_types.len() != args.types.len() {
-        let bad: Vec<&String> = args
-            .types
-            .iter()
-            .filter(|t| kq_format::ResType::from_extension(t).is_none())
-            .collect();
-        anyhow::bail!("unknown resource type(s): {}", join(&bad));
-    }
-
-    let pattern = args.pattern.as_deref().unwrap_or("");
-    let mut selected: Vec<u32> = Vec::new();
-
-    for (i, r) in index.resources.iter().enumerate() {
-        if !glob::matches(pattern, &r.resref) {
-            continue;
-        }
-        if !want_types.is_empty() && !want_types.contains(&r.restype) {
-            continue;
-        }
-        let source = index.source(r);
-        if !args.sources.is_empty()
-            && !args.sources.iter().any(|s| s.eq_ignore_ascii_case(source.kind.as_str()))
-        {
-            continue;
-        }
-        if !args.modules.is_empty() {
-            let Some(root) = source.module_root.as_deref() else { continue };
-            if !args.modules.iter().any(|m| m.eq_ignore_ascii_case(root)) {
-                continue;
-            }
-        }
-        selected.push(i as u32);
-    }
-
-    // Deterministic order: name, then precedence, so two runs agree and a
-    // diff of two installs lines up.
-    selected.sort_by(|&a, &b| {
-        let (ra, rb) = (&index.resources[a as usize], &index.resources[b as usize]);
-        ra.resref
-            .cmp(&rb.resref)
-            .then(ra.restype.cmp(&rb.restype))
-            .then(index.sources[ra.source as usize].precedence.cmp(
-                &index.sources[rb.source as usize].precedence,
-            ))
-    });
-
+    let mut selected = args
+        .filter
+        .select(&index, args.pattern.as_deref().unwrap_or(""))?;
     if args.winners {
-        selected.dedup_by(|&mut a, &mut b| {
-            let (ra, rb) = (&index.resources[a as usize], &index.resources[b as usize]);
-            ra.resref == rb.resref && ra.restype == rb.restype
-        });
+        Filter::dedup_winners(&index, &mut selected);
     }
 
     let total = selected.len();
@@ -153,13 +93,16 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     }
 
     if !ctx.out.json && !args.quiet && args.limit > 0 && total > args.limit {
-        writeln!(w, "{}", ctx.out.dim(&format!("... {} more (use -n 0 for all)", total - args.limit)))?;
+        writeln!(
+            w,
+            "{}",
+            ctx.out.dim(&format!(
+                "... {} more (use -n 0 for all)",
+                total - args.limit
+            ))
+        )?;
     }
     w.flush()?;
 
     Ok(if total == 0 { exit::NO_MATCH } else { exit::OK })
-}
-
-fn join(items: &[&String]) -> String {
-    items.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
 }

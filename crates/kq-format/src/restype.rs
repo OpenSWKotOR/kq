@@ -45,10 +45,42 @@ impl ResType {
         matches!(
             self.extension(),
             Some(
-                "gff" | "are" | "git" | "ifo" | "dlg" | "jrl" | "fac" | "gui" | "pth" | "itp"
-                    | "utc" | "utd" | "ute" | "uti" | "utm" | "utp" | "uts" | "utt" | "utw"
-                    | "bic" | "btc" | "btd" | "bte" | "bti" | "btm" | "btp" | "bts" | "btt"
-                    | "gic" | "utg" | "btg" | "ptm" | "ptt" | "uta" | "utx" | "res"
+                "gff"
+                    | "are"
+                    | "git"
+                    | "ifo"
+                    | "dlg"
+                    | "jrl"
+                    | "fac"
+                    | "gui"
+                    | "pth"
+                    | "itp"
+                    | "utc"
+                    | "utd"
+                    | "ute"
+                    | "uti"
+                    | "utm"
+                    | "utp"
+                    | "uts"
+                    | "utt"
+                    | "utw"
+                    | "bic"
+                    | "btc"
+                    | "btd"
+                    | "bte"
+                    | "bti"
+                    | "btm"
+                    | "btp"
+                    | "bts"
+                    | "btt"
+                    | "gic"
+                    | "utg"
+                    | "btg"
+                    | "ptm"
+                    | "ptt"
+                    | "uta"
+                    | "utx"
+                    | "res"
             )
         )
     }
@@ -63,7 +95,10 @@ impl ResType {
 
     /// True for the container types a walker should descend into.
     pub fn is_container(self) -> bool {
-        matches!(self.extension(), Some("erf" | "mod" | "sav" | "hak" | "rim" | "bif" | "key"))
+        matches!(
+            self.extension(),
+            Some("erf" | "mod" | "sav" | "hak" | "rim" | "bif" | "key")
+        )
     }
 }
 

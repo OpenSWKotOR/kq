@@ -40,8 +40,11 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
                     }
                 }
             }
-            let status =
-                Status { directory: dir.display().to_string(), entries, bytes };
+            let status = Status {
+                directory: dir.display().to_string(),
+                entries,
+                bytes,
+            };
             if ctx.out.json {
                 ctx.out.json_value(&status)?;
             } else {

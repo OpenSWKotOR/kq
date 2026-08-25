@@ -52,8 +52,10 @@ fn value_to_json(v: &Value) -> J {
             let mut m = Map::new();
             m.insert("strref".into(), json!(strref));
             if !substrings.is_empty() {
-                let subs: Map<String, J> =
-                    substrings.iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
+                let subs: Map<String, J> = substrings
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), json!(v)))
+                    .collect();
                 m.insert("substrings".into(), J::Object(subs));
             }
             J::Object(m)
@@ -80,7 +82,10 @@ pub fn twoda_to_json(t: &TwoDa) -> J {
         .enumerate()
         .map(|(i, cells)| {
             let mut m = Map::with_capacity(cells.len() + 1);
-            m.insert("_row".into(), json!(t.labels.get(i).cloned().unwrap_or_default()));
+            m.insert(
+                "_row".into(),
+                json!(t.labels.get(i).cloned().unwrap_or_default()),
+            );
             for (col, cell) in t.columns.iter().zip(cells) {
                 m.insert(col.clone(), json!(cell));
             }
@@ -126,8 +131,11 @@ fn gron_inner(path: &str, value: &J, out: &mut impl std::fmt::Write) -> std::fmt
                 writeln!(out, "{path} = {{}}")?;
             }
             for (k, v) in map {
-                let child =
-                    if is_bare_key(k) { format!("{path}.{k}") } else { format!("{path}[{k:?}]") };
+                let child = if is_bare_key(k) {
+                    format!("{path}.{k}")
+                } else {
+                    format!("{path}[{k:?}]")
+                };
                 gron_inner(&child, v, out)?;
             }
             Ok(())

@@ -7,8 +7,8 @@
 pub const OK: i32 = 0;
 /// Something went wrong at runtime: unreadable file, corrupt archive, I/O.
 pub const FAILURE: i32 = 1;
-/// The arguments did not make sense.
-pub const USAGE: i32 = 2;
+// 2 (bad arguments) is not listed here: clap exits with it directly when
+// parsing fails, before any command body runs.
 /// The query was valid and matched nothing.
 pub const NO_MATCH: i32 = 3;
 /// No KotOR installation was found at the given or inferred path.

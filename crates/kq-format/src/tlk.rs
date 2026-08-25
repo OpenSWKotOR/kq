@@ -62,7 +62,10 @@ pub fn read(data: &[u8], path: &Path) -> Result<Tlk> {
         };
         entries.push(Entry { text, sound });
     }
-    Ok(Tlk { language_id, entries })
+    Ok(Tlk {
+        language_id,
+        entries,
+    })
 }
 
 fn decode(bytes: &[u8]) -> String {

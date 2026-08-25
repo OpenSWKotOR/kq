@@ -12,8 +12,8 @@ use kq_index::{Index, Resource};
 /// Read one resource's bytes.
 pub fn read(index: &Index, r: &Resource) -> Result<Vec<u8>> {
     let path = index.file(r);
-    let mut file = std::fs::File::open(path)
-        .with_context(|| format!("cannot open {}", path.display()))?;
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
     if r.offset > 0 {
         file.seek(SeekFrom::Start(r.offset))
             .with_context(|| format!("cannot seek to {} in {}", r.offset, path.display()))?;

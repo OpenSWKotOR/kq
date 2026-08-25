@@ -88,8 +88,16 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     }
 
     if ctx.out.json {
-        ctx.out.json_value(&Report { resref: name, matches: hits.len(), hits })?;
-        return Ok(if ids.is_empty() { exit::NO_MATCH } else { exit::OK });
+        ctx.out.json_value(&Report {
+            resref: name,
+            matches: hits.len(),
+            hits,
+        })?;
+        return Ok(if ids.is_empty() {
+            exit::NO_MATCH
+        } else {
+            exit::OK
+        });
     }
 
     if hits.is_empty() {
@@ -110,7 +118,10 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         );
     }
     if hits.len() > 1 {
-        println!("\n{}", o.dim("* is the copy the game loads; the rest are shadowed."));
+        println!(
+            "\n{}",
+            o.dim("* is the copy the game loads; the rest are shadowed.")
+        );
     }
     Ok(exit::OK)
 }

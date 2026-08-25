@@ -292,6 +292,7 @@ dependencies = [
  "kq-format",
  "kq-index",
  "memmap2",
+ "rayon",
  "regex",
  "serde",
  "serde_json",

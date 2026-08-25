@@ -73,6 +73,9 @@ mod tests {
 
     #[test]
     fn consecutive_stars_do_not_backtrack_forever() {
-        assert!(matches("a*******************b", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"));
+        assert!(matches(
+            "a*******************b",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"
+        ));
     }
 }

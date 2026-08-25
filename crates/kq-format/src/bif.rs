@@ -39,7 +39,12 @@ pub fn read_table(data: &[u8], path: &Path) -> Result<Vec<BifResource>> {
         let offset = r.u32()?;
         let size = r.u32()?;
         let restype = ResType(r.u32()? as u16);
-        out.push(BifResource { id, offset, size, restype });
+        out.push(BifResource {
+            id,
+            offset,
+            size,
+            restype,
+        });
     }
     Ok(out)
 }

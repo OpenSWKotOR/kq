@@ -58,7 +58,13 @@ pub fn read_entries(data: &[u8], path: &Path) -> Result<Vec<Entry>> {
         let offset = r.u32()? as u64;
         let size = r.u32()? as u64;
 
-        out.push(Entry { resref, restype, file: path.to_path_buf(), offset, size });
+        out.push(Entry {
+            resref,
+            restype,
+            file: path.to_path_buf(),
+            offset,
+            size,
+        });
     }
     Ok(out)
 }

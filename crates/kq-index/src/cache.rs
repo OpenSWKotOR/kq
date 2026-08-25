@@ -16,19 +16,18 @@ use crate::index::{Index, SCHEMA_VERSION};
 
 /// Directories whose contents decide whether a cached index is still valid.
 fn fingerprint_inputs(install: &Install) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    for d in [
+    let mut dirs: Vec<PathBuf> = [
         install.data.as_ref(),
         install.modules.as_ref(),
         install.override_dir.as_ref(),
         install.lips.as_ref(),
         install.texturepacks.as_ref(),
         install.rims.as_ref(),
-    ] {
-        if let Some(d) = d {
-            dirs.push(d.clone());
-        }
-    }
+    ]
+    .into_iter()
+    .flatten()
+    .cloned()
+    .collect();
     dirs.extend(install.streams.iter().cloned());
     dirs
 }
@@ -75,7 +74,9 @@ fn stamp(hasher: &mut impl Hasher, path: &Path) {
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     let mut stack = vec![dir.to_path_buf()];
     while let Some(current) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&current) else { continue };
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            continue;
+        };
         for e in entries.flatten() {
             match e.file_type() {
                 Ok(t) if t.is_dir() => stack.push(e.path()),
@@ -92,7 +93,9 @@ pub fn cache_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("KQ_CACHE_DIR") {
         return PathBuf::from(dir);
     }
-    dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("kq")
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("kq")
 }
 
 fn cache_path(fingerprint: u64) -> PathBuf {
@@ -121,7 +124,11 @@ pub fn store(index: &Index) -> Result<PathBuf> {
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("cannot create cache directory {}", dir.display()))?;
     let final_path = cache_path(index.fingerprint);
-    let tmp = dir.join(format!(".index-{}-{}.tmp", std::process::id(), index.fingerprint));
+    let tmp = dir.join(format!(
+        ".index-{}-{}.tmp",
+        std::process::id(),
+        index.fingerprint
+    ));
     let bytes = rmp_serde::to_vec_named(index).context("serializing index")?;
     std::fs::write(&tmp, &bytes).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, &final_path)
@@ -132,7 +139,9 @@ pub fn store(index: &Index) -> Result<PathBuf> {
 /// Delete every cached index. Returns how many files were removed.
 pub fn clear() -> Result<usize> {
     let dir = cache_dir();
-    let Ok(entries) = std::fs::read_dir(&dir) else { return Ok(0) };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(0);
+    };
     let mut n = 0;
     for e in entries.flatten() {
         let name = e.file_name();

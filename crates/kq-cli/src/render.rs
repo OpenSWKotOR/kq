@@ -26,7 +26,7 @@ pub enum Format {
 /// What a resource decoded into.
 pub enum Decoded {
     /// A structured value: GFF tree, 2DA rows, TLK entries.
-    Value { kind: &'static str, value: J },
+    Value(J),
     /// The resource was already text.
     Text(String),
     /// No decoder for this format yet.
@@ -40,15 +40,15 @@ pub fn decode(bytes: &[u8], restype: Option<ResType>, name: &str) -> Result<Deco
 
     if gff::sniff(bytes) {
         let g = gff::read(bytes, path)?;
-        return Ok(Decoded::Value { kind: "gff", value: text::gff_to_json(&g) });
+        return Ok(Decoded::Value(text::gff_to_json(&g)));
     }
     if twoda::sniff(bytes) {
         let t = twoda::read(bytes, path)?;
-        return Ok(Decoded::Value { kind: "2da", value: text::twoda_to_json(&t) });
+        return Ok(Decoded::Value(text::twoda_to_json(&t)));
     }
     if tlk::sniff(bytes) {
         let t = tlk::read(bytes, path)?;
-        return Ok(Decoded::Value { kind: "tlk", value: text::tlk_to_json(&t) });
+        return Ok(Decoded::Value(text::tlk_to_json(&t)));
     }
     if restype.is_some_and(ResType::is_plain_text) || looks_like_text(bytes) {
         return Ok(Decoded::Text(decode_cp1252(bytes)));
@@ -67,9 +67,9 @@ pub fn render(decoded: &Decoded, format: Format, root: &str) -> Result<String> {
     use std::fmt::Write;
     let mut s = String::new();
     match (decoded, format) {
-        (Decoded::Value { value, .. }, Format::Gron) => text::gron(root, value, &mut s)?,
-        (Decoded::Value { value, .. }, Format::Outline) => text::outline(value, &mut s)?,
-        (Decoded::Value { value, .. }, Format::Json) => {
+        (Decoded::Value(value), Format::Gron) => text::gron(root, value, &mut s)?,
+        (Decoded::Value(value), Format::Outline) => text::outline(value, &mut s)?,
+        (Decoded::Value(value), Format::Json) => {
             s = serde_json::to_string_pretty(value)?;
             s.push('\n');
         }
@@ -102,17 +102,6 @@ pub fn render(decoded: &Decoded, format: Format, root: &str) -> Result<String> {
         (_, Format::Raw) => unreachable!("raw is handled before decoding"),
     }
     Ok(s)
-}
-
-/// Convert a decoded resource to JSON regardless of what it was.
-pub fn to_json(decoded: &Decoded) -> J {
-    match decoded {
-        Decoded::Value { value, .. } => value.clone(),
-        Decoded::Text(t) => J::String(t.clone()),
-        Decoded::Opaque { kind, len } => {
-            serde_json::json!({ "kind": kind, "bytes": len, "decoded": false })
-        }
-    }
 }
 
 /// Heuristic for "this is already text".

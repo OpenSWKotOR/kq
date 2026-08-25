@@ -14,7 +14,11 @@ pub struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     pub fn new(data: &'a [u8], path: impl Into<PathBuf>) -> Self {
-        Self { data, path: path.into(), pos: 0 }
+        Self {
+            data,
+            path: path.into(),
+            pos: 0,
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -51,7 +55,10 @@ impl<'a> Reader<'a> {
     }
 
     pub fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        let end = self.pos.checked_add(n).ok_or_else(|| self.truncated(self.pos, n))?;
+        let end = self
+            .pos
+            .checked_add(n)
+            .ok_or_else(|| self.truncated(self.pos, n))?;
         if end > self.data.len() {
             return Err(self.truncated(self.pos, n));
         }
@@ -61,7 +68,9 @@ impl<'a> Reader<'a> {
     }
 
     pub fn slice_at(&self, offset: usize, n: usize) -> Result<&'a [u8]> {
-        let end = offset.checked_add(n).ok_or_else(|| self.truncated(offset, n))?;
+        let end = offset
+            .checked_add(n)
+            .ok_or_else(|| self.truncated(offset, n))?;
         if end > self.data.len() {
             return Err(self.truncated(offset, n));
         }
@@ -111,7 +120,10 @@ impl<'a> Reader<'a> {
     }
 
     pub fn malformed(&self, message: impl Into<String>) -> FormatError {
-        FormatError::Malformed { path: self.path.clone(), message: message.into() }
+        FormatError::Malformed {
+            path: self.path.clone(),
+            message: message.into(),
+        }
     }
 
     pub fn expect_signature(&mut self, expected: &'static str) -> Result<()> {
@@ -130,7 +142,9 @@ impl<'a> Reader<'a> {
 /// Trim a NUL-padded fixed-width field and lowercase it.
 pub fn decode_fixed(raw: &[u8]) -> String {
     let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
-    String::from_utf8_lossy(&raw[..end]).trim().to_ascii_lowercase()
+    String::from_utf8_lossy(&raw[..end])
+        .trim()
+        .to_ascii_lowercase()
 }
 
 /// Decode a NUL-terminated string starting at `offset`, preserving case.

@@ -28,7 +28,11 @@ pub enum Freshness {
 /// `read_cache` and `write_cache` are independent: `--refresh` skips the read
 /// so it recomputes, but still writes, so the rebuilt index actually replaces
 /// the stale one instead of leaving it for the next plain run to load.
-pub fn open(root: &Path, read_cache: bool, write_cache: bool) -> Result<(Install, Index, Freshness)> {
+pub fn open(
+    root: &Path,
+    read_cache: bool,
+    write_cache: bool,
+) -> Result<(Install, Index, Freshness)> {
     let install = discover::open(root)?;
     if read_cache {
         if let Some(index) = cache::load(&install) {

@@ -1,6 +1,7 @@
 //! `kq` — query a KotOR installation like it was plain text.
 
 mod exit;
+mod filter;
 mod glob;
 mod output;
 mod read;
@@ -8,8 +9,9 @@ mod render;
 mod resolve;
 
 mod cmd {
-    pub mod cat;
     pub mod cache;
+    pub mod cat;
+    pub mod grep;
     pub mod info;
     pub mod ls;
     pub mod which;
@@ -66,7 +68,13 @@ one. Every command takes --json.",
 )]
 struct Cli {
     /// Path to the KotOR installation.
-    #[arg(short = 'i', long, global = true, value_name = "PATH", env = "KQ_INSTALL")]
+    #[arg(
+        short = 'i',
+        long,
+        global = true,
+        value_name = "PATH",
+        env = "KQ_INSTALL"
+    )]
     install: Option<PathBuf>,
 
     /// Emit JSON instead of text.
@@ -100,6 +108,8 @@ enum Command {
     Which(cmd::which::Args),
     /// Print a resource.
     Cat(cmd::cat::Args),
+    /// Search resource contents as text.
+    Grep(cmd::grep::Args),
     /// Inspect or clear the index cache.
     Cache(cmd::cache::Args),
 }
@@ -118,6 +128,7 @@ fn main() -> ExitCode {
         Command::Ls(a) => cmd::ls::run(&ctx, a),
         Command::Which(a) => cmd::which::run(&ctx, a),
         Command::Cat(a) => cmd::cat::run(&ctx, a),
+        Command::Grep(a) => cmd::grep::run(&ctx, a),
         Command::Cache(a) => cmd::cache::run(&ctx, a),
     };
 
@@ -130,7 +141,12 @@ fn main() -> ExitCode {
                 return ExitCode::from(exit::OK as u8);
             }
             eprintln!("kq: {e:#}");
-            ExitCode::from(exit::FAILURE as u8)
+            let code = if e.downcast_ref::<resolve::NoInstall>().is_some() {
+                exit::NO_INSTALL
+            } else {
+                exit::FAILURE
+            };
+            ExitCode::from(code as u8)
         }
     }
 }

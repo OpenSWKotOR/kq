@@ -63,7 +63,11 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let filename = resource.filename();
     let decoded = render::decode(&bytes, Some(resource.restype), &filename)?;
     // --json is a global flag; honor it even when --format was not given.
-    let format = if ctx.out.json && format == Format::Outline { Format::Json } else { format };
+    let format = if ctx.out.json && format == Format::Outline {
+        Format::Json
+    } else {
+        format
+    };
     w.write_all(render::render(&decoded, format, &filename)?.as_bytes())?;
     Ok(exit::OK)
 }

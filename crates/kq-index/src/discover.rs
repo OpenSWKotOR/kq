@@ -59,7 +59,10 @@ pub fn open(root: &Path) -> Result<Install> {
         .canonicalize()
         .with_context(|| format!("cannot resolve installation path {}", root.display()))?;
     let Some(chitin) = child(&root, "chitin.key") else {
-        bail!("{} is not a KotOR installation (no chitin.key)", root.display());
+        bail!(
+            "{} is not a KotOR installation (no chitin.key)",
+            root.display()
+        );
     };
 
     let modules = child_dir(&root, "modules");
@@ -72,8 +75,10 @@ pub fn open(root: &Path) -> Result<Install> {
         }
     }
 
-    let talk_tables =
-        ["dialog.tlk", "dialogf.tlk"].iter().filter_map(|n| child(&root, n)).collect();
+    let talk_tables = ["dialog.tlk", "dialogf.tlk"]
+        .iter()
+        .filter_map(|n| child(&root, n))
+        .collect();
 
     Ok(Install {
         chitin,

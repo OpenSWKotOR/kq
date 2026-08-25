@@ -69,7 +69,11 @@ impl Key {
             // others, so read to the NUL and use the length only as a bound.
             let raw = r.slice_at(name_offset, name_len.min(data.len() - name_offset))?;
             let name = decode_cstr(raw, 0);
-            let name = if name.is_empty() { decode_cstr(data, name_offset) } else { name };
+            let name = if name.is_empty() {
+                decode_cstr(data, name_offset)
+            } else {
+                name
+            };
             let normalized = name.replace('\\', "/");
             bifs.push(BifRef {
                 path: resolve_relative(root, &normalized),
@@ -92,10 +96,21 @@ impl Key {
                     bifs.len()
                 )));
             }
-            keys.push(KeyEntry { resref, restype, bif_index, resource_index });
+            keys.push(KeyEntry {
+                resref,
+                restype,
+                bif_index,
+                resource_index,
+            });
         }
 
-        Ok(Key { path: path.to_path_buf(), bifs, keys, build_year, build_day })
+        Ok(Key {
+            path: path.to_path_buf(),
+            bifs,
+            keys,
+            build_year,
+            build_day,
+        })
     }
 }
 
@@ -117,7 +132,10 @@ fn resolve_relative(root: &Path, rel: &str) -> PathBuf {
             continue;
         }
         let found = std::fs::read_dir(&current).ok().and_then(|entries| {
-            entries.flatten().find(|e| e.file_name().eq_ignore_ascii_case(part)).map(|e| e.path())
+            entries
+                .flatten()
+                .find(|e| e.file_name().eq_ignore_ascii_case(part))
+                .map(|e| e.path())
         });
         match found {
             Some(p) => current = p,
@@ -132,8 +150,12 @@ fn resolve_relative(root: &Path, rel: &str) -> PathBuf {
 pub fn resolve_entries(key: &Key, bif_tables: &[Vec<crate::bif::BifResource>]) -> Vec<Entry> {
     let mut out = Vec::with_capacity(key.keys.len());
     for k in &key.keys {
-        let Some(table) = bif_tables.get(k.bif_index) else { continue };
-        let Some(res) = table.get(k.resource_index) else { continue };
+        let Some(table) = bif_tables.get(k.bif_index) else {
+            continue;
+        };
+        let Some(res) = table.get(k.resource_index) else {
+            continue;
+        };
         out.push(Entry {
             resref: k.resref.clone(),
             restype: k.restype,

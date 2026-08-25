@@ -34,7 +34,9 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let mut by_source: BTreeMap<String, usize> = BTreeMap::new();
     let mut by_type: BTreeMap<String, usize> = BTreeMap::new();
     for r in &index.resources {
-        *by_source.entry(index.source(r).kind.as_str().to_string()).or_default() += 1;
+        *by_source
+            .entry(index.source(r).kind.as_str().to_string())
+            .or_default() += 1;
         *by_type.entry(r.restype.to_string()).or_default() += 1;
     }
 
@@ -64,7 +66,11 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     println!("  {:<12} {}", o.dim("modules"), report.modules);
     println!("  {:<12} {}", o.dim("containers"), report.containers);
 
-    let table = if args.by_type { &report.by_type } else { &report.by_source };
+    let table = if args.by_type {
+        &report.by_type
+    } else {
+        &report.by_source
+    };
     let heading = if args.by_type { "by type" } else { "by source" };
     println!("\n{}", o.bold(heading));
 
@@ -74,7 +80,10 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         println!("  {:<14} {:>7}", o.accent(name), count);
     }
     if args.by_type && rows.len() > 20 {
-        println!("  {}", o.dim(&format!("... and {} more types", rows.len() - 20)));
+        println!(
+            "  {}",
+            o.dim(&format!("... and {} more types", rows.len() - 20))
+        );
     }
     Ok(exit::OK)
 }

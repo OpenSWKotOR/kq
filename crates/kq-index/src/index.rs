@@ -71,7 +71,10 @@ impl Index {
     /// "which copy of this actually loads, and what is it shadowing" is the
     /// question people get wrong about KotOR.
     pub fn lookup(&self, resref: &str) -> &[u32] {
-        self.lookup.get(&resref.to_ascii_lowercase()).map(Vec::as_slice).unwrap_or(&[])
+        self.lookup
+            .get(&resref.to_ascii_lowercase())
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// The resource the engine would load for this ResRef.
@@ -86,20 +89,29 @@ impl Index {
     /// cached index, since the map is derived state and is not persisted.
     pub fn reindex(&mut self) {
         let mut order: Vec<u32> = (0..self.resources.len() as u32).collect();
-        let prec: Vec<u32> =
-            self.resources.iter().map(|r| self.sources[r.source as usize].precedence).collect();
+        let prec: Vec<u32> = self
+            .resources
+            .iter()
+            .map(|r| self.sources[r.source as usize].precedence)
+            .collect();
         order.sort_by_key(|&i| (prec[i as usize], i));
 
         let mut lookup: HashMap<String, Vec<u32>> = HashMap::with_capacity(self.resources.len());
         for i in order {
-            lookup.entry(self.resources[i as usize].resref.clone()).or_default().push(i);
+            lookup
+                .entry(self.resources[i as usize].resref.clone())
+                .or_default()
+                .push(i);
         }
         self.lookup = lookup;
     }
 
     pub fn module_roots(&self) -> Vec<&str> {
-        let mut roots: Vec<&str> =
-            self.sources.iter().filter_map(|s| s.module_root.as_deref()).collect();
+        let mut roots: Vec<&str> = self
+            .sources
+            .iter()
+            .filter_map(|s| s.module_root.as_deref())
+            .collect();
         roots.sort_unstable();
         roots.dedup();
         roots
@@ -110,8 +122,8 @@ impl Index {
 /// syscall. Container headers sit at the front and the tables near it, so a
 /// mapped 400 MB texture pack costs a handful of pages, not 400 MB.
 fn map_file(path: &Path) -> Result<MappedFile> {
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("cannot open {}", path.display()))?;
+    let file =
+        std::fs::File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
     if len > 1 << 20 {
         // SAFETY: the index is read-only and a concurrent truncation would at
@@ -144,7 +156,11 @@ impl std::ops::Deref for MappedFile {
 /// `danm13_s.rim`, `danm13_dlg.erf` and `danm13.mod` are three files that
 /// make up one module named `danm13`.
 pub fn module_root(filename: &str) -> String {
-    let stem = filename.rsplit_once('.').map(|(s, _)| s).unwrap_or(filename).to_ascii_lowercase();
+    let stem = filename
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(filename)
+        .to_ascii_lowercase();
     for suffix in ["_dlg", "_adx", "_s", "_a"] {
         if let Some(base) = stem.strip_suffix(suffix) {
             return base.to_string();
@@ -187,10 +203,12 @@ pub fn build(install: &Install) -> Result<Index> {
         let tables: Vec<(Vec<bif::BifResource>, Option<String>)> = key
             .bifs
             .par_iter()
-            .map(|b| match map_file(&b.path).and_then(|d| Ok(bif::read_table(&d, &b.path)?)) {
-                Ok(t) => (t, None),
-                Err(e) => (Vec::new(), Some(format!("{}: {e}", b.name))),
-            })
+            .map(
+                |b| match map_file(&b.path).and_then(|d| Ok(bif::read_table(&d, &b.path)?)) {
+                    Ok(t) => (t, None),
+                    Err(e) => (Vec::new(), Some(format!("{}: {e}", b.name))),
+                },
+            )
             .collect();
 
         let mut bif_sources = Vec::with_capacity(key.bifs.len());
@@ -270,7 +288,11 @@ pub fn build(install: &Install) -> Result<Index> {
 
     // ---- loose-file folders ---------------------------------------------
     for (dir, kind, label) in [
-        (install.override_dir.as_ref(), SourceKind::Override, "Override"),
+        (
+            install.override_dir.as_ref(),
+            SourceKind::Override,
+            "Override",
+        ),
         (install.data.as_ref(), SourceKind::Chitin, "data"),
     ] {
         let Some(dir) = dir else { continue };
@@ -293,7 +315,9 @@ pub fn build(install: &Install) -> Result<Index> {
 
     // ---- talk tables: dialog.tlk / dialogf.tlk at the install root -------
     for path in &install.talk_tables {
-        let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase())
+        let Some(stem) = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_ascii_lowercase())
         else {
             continue;
         };
@@ -304,7 +328,11 @@ pub fn build(install: &Install) -> Result<Index> {
                 continue;
             }
         };
-        let label = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let label = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
         let source_id = sources.len() as u32;
         sources.push(Source {
             kind: SourceKind::TalkTable,
@@ -328,7 +356,11 @@ pub fn build(install: &Install) -> Result<Index> {
     }
 
     for dir in &install.streams {
-        let label = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let label = dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
         let source_id = sources.len() as u32;
         sources.push(Source {
             kind: SourceKind::Stream,
@@ -360,13 +392,20 @@ pub fn build(install: &Install) -> Result<Index> {
 
 fn is_capsule_ext(path: &Path) -> bool {
     matches!(
-        path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(),
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
         Some("mod" | "rim" | "erf" | "sav" | "hak")
     )
 }
 
 fn parse_capsule(kind: SourceKind, path: &Path) -> Parsed {
-    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -379,8 +418,8 @@ fn parse_capsule(kind: SourceKind, path: &Path) -> Parsed {
     } else {
         kind
     };
-    let module_root = matches!(kind, SourceKind::ModuleMod | SourceKind::ModuleRim)
-        .then(|| module_root(&name));
+    let module_root =
+        matches!(kind, SourceKind::ModuleMod | SourceKind::ModuleRim).then(|| module_root(&name));
 
     let source = Source {
         kind,
@@ -403,11 +442,23 @@ fn parse_capsule(kind: SourceKind, path: &Path) -> Parsed {
                 };
             };
             match parsed {
-                Ok(entries) => Parsed { source, entries, warning: None },
-                Err(e) => Parsed { source, entries: Vec::new(), warning: Some(e.to_string()) },
+                Ok(entries) => Parsed {
+                    source,
+                    entries,
+                    warning: None,
+                },
+                Err(e) => Parsed {
+                    source,
+                    entries: Vec::new(),
+                    warning: Some(e.to_string()),
+                },
             }
         }
-        Err(e) => Parsed { source, entries: Vec::new(), warning: Some(e.to_string()) },
+        Err(e) => Parsed {
+            source,
+            entries: Vec::new(),
+            warning: Some(e.to_string()),
+        },
     }
 }
 
@@ -438,12 +489,23 @@ fn loose_resource(
         files.push(path.to_path_buf());
         id
     });
-    Some(Resource { resref: stem, restype, file, offset: 0, size, source: source_id })
+    Some(Resource {
+        resref: stem,
+        restype,
+        file,
+        offset: 0,
+        size,
+        source: source_id,
+    })
 }
 
 fn list_dir(dir: &Path, warnings: &mut Vec<String>) -> Vec<PathBuf> {
     match std::fs::read_dir(dir) {
-        Ok(entries) => entries.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect(),
+        Ok(entries) => entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_file())
+            .collect(),
         Err(e) => {
             warnings.push(format!("{}: {e}", dir.display()));
             Vec::new()

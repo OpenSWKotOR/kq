@@ -6,8 +6,8 @@
 pub mod bif;
 pub mod container;
 pub mod erf;
-pub mod gff;
 pub mod error;
+pub mod gff;
 pub mod key;
 pub mod reader;
 pub mod restype;
