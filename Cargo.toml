@@ -17,3 +17,4 @@ serde_json = { version = "1", features = ["preserve_order"] }
 memmap2 = "0.9"
 rayon = "1"
 clap = { version = "4", features = ["derive", "env", "wrap_help"] }
+kotor-ncs-isa = { version = "0.1.0", path = "../kotor-formats/crates/kotor-ncs-isa" }
