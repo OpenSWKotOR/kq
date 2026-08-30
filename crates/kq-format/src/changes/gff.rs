@@ -59,6 +59,17 @@ impl ChangesIni {
             self.gff_files.push(filename.to_string());
         }
 
+        // Everything in the file's own section other than an `AddField`
+        // reference is a field whose value moved, which is what a token pass
+        // is allowed to reconsider. A field the mod created has no previous
+        // value to have moved from, so it is deliberately not offered.
+        for (key, _) in &file_section.entries {
+            if !key.starts_with("AddField") {
+                self.changed_entries
+                    .push((filename.to_string(), key.clone()));
+            }
+        }
+
         // Section names are only made unique once the whole file is walked, so
         // the nested references built during the walk stay valid.
         self.push(file_section);

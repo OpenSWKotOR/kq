@@ -103,6 +103,9 @@ impl ChangesIni {
             // columns it applies to.
             section.set("RowIndex", row.to_string());
             for (column, value) in changes {
+                // A cell that moved is evidence a token pass can act on.
+                self.changed_entries
+                    .push((section_name.clone(), column.clone()));
                 section.set(column, escape(&value));
             }
 
@@ -140,6 +143,19 @@ impl ChangesIni {
                     section.set(name, escape(value));
                 }
             }
+
+            // Remember where this row lands so a token pass can offer it as a
+            // capture target instead of letting other files hardcode the index.
+            let label = modified
+                .row_label(row)
+                .map(str::to_string)
+                .unwrap_or_else(|_| row.to_string());
+            self.created_rows.push(super::CreatedRow {
+                section: section_name.clone(),
+                index: row,
+                label,
+                token: None,
+            });
 
             file_section.set(format!("AddRow{add_row_index}"), &section_name);
             pending.push(section);

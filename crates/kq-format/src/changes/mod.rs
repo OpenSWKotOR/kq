@@ -11,14 +11,16 @@
 //! folds every integer width into one variant. The rich type keeps the type
 //! tag, so it is the only side that can answer the question.
 //!
-//! Nothing here emits `2DAMEMORY` or `StrRef` tokens yet. Those need a second
-//! pass that notices when a literal in one file matches an index the diff
-//! itself created, which is why [`ChangesIni::sections`] hands back the
-//! document as ordered key/value pairs rather than finished text — a later
-//! pass can rewrite values and insert capture keys without re-deriving
-//! anything.
+//! Tokens are not emitted while diffing. [`ChangesIni::link_tokens`] is a
+//! separate, opt-in pass that notices when a literal in one file matches an
+//! index the diff itself created — which is why the document is kept as
+//! ordered key/value pairs rather than finished text until [`ChangesIni::render`].
 
 pub mod gff;
+pub mod install;
+pub mod ssf;
+pub mod tlk;
+pub mod tokens;
 pub mod twoda;
 
 /// One `[name]` block and its keys, in the order they must be written.
@@ -57,13 +59,52 @@ impl Section {
     }
 }
 
+/// A row this diff appends, and the section that appends it.
+///
+/// Recorded so [`ChangesIni::link_tokens`] can turn a literal reference to the
+/// row's eventual position into a `2DAMEMORY` token, and add the capture key
+/// that fills the slot.
+#[derive(Debug, Clone)]
+pub(crate) struct CreatedRow {
+    /// The section that carries the `AddRow` keys.
+    pub section: String,
+    /// Where the row lands once appended.
+    pub index: usize,
+    /// The label it will carry.
+    pub label: String,
+    /// Slot number, once something references it.
+    pub token: Option<u32>,
+}
+
+/// A string this diff appends to the talk table.
+#[derive(Debug, Clone)]
+pub(crate) struct CreatedStrRef {
+    /// The `StrRef<n>` token that names it.
+    pub token: u32,
+    /// Where the string lands in the game's table once appended.
+    pub resulting_strref: u32,
+}
+
 /// A generated instruction file, still in pieces.
 #[derive(Debug, Clone, Default)]
 pub struct ChangesIni {
     twoda_files: Vec<String>,
     gff_files: Vec<String>,
+    ssf_files: Vec<String>,
+    /// `StrRef<token>=<index into append.tlk>` pairs.
+    tlk_tokens: Vec<(u32, usize)>,
+    /// `<section name>=<destination>` pairs for `[InstallList]`.
+    install_folders: Vec<(String, String)>,
     sections: Vec<Section>,
     warnings: Vec<String>,
+    pub(crate) created_rows: Vec<CreatedRow>,
+    pub(crate) created_strrefs: Vec<CreatedStrRef>,
+    /// `(section, key)` for entries whose value differs from the base file.
+    ///
+    /// Only these are eligible for token rewriting: a value that changed is
+    /// the one piece of evidence available that a number means something
+    /// rather than being a number.
+    pub(crate) changed_entries: Vec<(String, String)>,
 }
 
 impl ChangesIni {
@@ -107,6 +148,11 @@ impl ChangesIni {
         self.sections.push(section);
     }
 
+    /// Find a section by name.
+    pub(crate) fn section_mut(&mut self, name: &str) -> Option<&mut Section> {
+        self.sections.iter_mut().find(|s| s.name == name)
+    }
+
     /// Reserve a section name that no other section is using.
     fn unique_name(&self, wanted: &str) -> String {
         if !self.sections.iter().any(|s| s.name == wanted) {
@@ -145,6 +191,30 @@ impl ChangesIni {
             out.push_str("\n[GFFList]\n");
             for (i, file) in self.gff_files.iter().enumerate() {
                 out.push_str(&format!("File{i}={file}\n"));
+            }
+        }
+
+        if !self.ssf_files.is_empty() {
+            out.push_str("\n[SSFList]\n");
+            for (i, file) in self.ssf_files.iter().enumerate() {
+                out.push_str(&format!("File{i}={file}\n"));
+            }
+        }
+
+        // The talk table is its own list: the keys map a token to a line in
+        // the appended file, and the source file is named alongside them.
+        if !self.tlk_tokens.is_empty() {
+            out.push_str("\n[TLKList]\n");
+            for (token, append_index) in &self.tlk_tokens {
+                out.push_str(&format!("StrRef{token}={append_index}\n"));
+            }
+        }
+
+        // A key here names a section; its value is where those files land.
+        if !self.install_folders.is_empty() {
+            out.push_str("\n[InstallList]\n");
+            for (section, destination) in &self.install_folders {
+                out.push_str(&format!("{section}={destination}\n"));
             }
         }
 
