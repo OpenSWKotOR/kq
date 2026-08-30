@@ -18,8 +18,11 @@ memmap2 = "0.9"
 rayon = "1"
 clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 
-# Path deps while both trees sit side by side. Release builds pin a git tag:
-# kotor-ncs-isa = { git = "https://github.com/oldrepublicwizard/kotor-formats", tag = "v0.1.0" }
-# kotor-formats = { git = "https://github.com/oldrepublicwizard/kotor-formats", tag = "v0.1.0" }
-kotor-ncs-isa = { version = "0.1.0", path = "../kotor-formats/crates/kotor-ncs-isa" }
-kotor-formats = { version = "0.1.0", path = "../kotor-formats/crates/kotor-formats" }
+kotor-ncs-isa = { git = "https://github.com/arrenkaetris/kotor-formats", tag = "v0.1.0" }
+kotor-formats = { git = "https://github.com/arrenkaetris/kotor-formats", tag = "v0.1.0" }
+
+# To work against a local kotor-formats checkout instead of the pinned tag,
+# uncomment:
+# [patch."https://github.com/arrenkaetris/kotor-formats"]
+# kotor-ncs-isa = { path = "../kotor-formats/crates/kotor-ncs-isa" }
+# kotor-formats = { path = "../kotor-formats/crates/kotor-formats" }
