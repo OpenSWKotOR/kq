@@ -1,7 +1,7 @@
 # kq CLI reference
 
 Confirm live flags with `kq --help` and `kq <command> --help`. This file
-matches kq 0.3.3.
+matches kq 0.3.5.
 
 ## Source kinds (`-s`)
 
@@ -29,6 +29,10 @@ kq -i "$KQ_INSTALL" graph --what leftovers -q
 kq -i "$KQ_INSTALL" unused -t utc -n 40
 kq -i "$KQ_INSTALL" leftovers --summary
 kq -i "$KQ_INSTALL" leftovers --what strings -n 40
+kq -i "$KQ_INSTALL" delta appearance.2da --shadow
+kq -i "$KQ_INSTALL" --text delta n_bastila.utc --from Override --against templates.bif
+kq patch n_bastila.utc change.json -o patched.json
+kq merge stock.json mine.json theirs.json
 ```
 
 ## Environment

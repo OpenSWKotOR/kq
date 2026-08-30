@@ -193,6 +193,35 @@ Formats (`-f`):
 | `json` | the same tree as JSON, for `jq` |
 | `raw` | exact bytes (`--raw` is the same) |
 
+### `kq delta LEFT RIGHT`
+
+Compare two decoded resources. Output is a `kq-delta-1` document (JSON Patch
+ops). `--text` prints `+`/`-` gron lines. Exit `5` when they differ.
+
+```bash
+kq delta n_bastila.utc --shadow
+kq delta appearance.2da --from Override --against 'data/2da.bif'
+kq delta a.json b.json
+kq delta n_bastila.utc --other /path/to/vanilla -o change.json
+```
+
+### `kq patch TARGET DELTA`
+
+Apply a delta document to a resource; write the patched JSON.
+
+```bash
+kq patch n_bastila.utc change.json -o patched.json
+```
+
+### `kq merge BASE OURS THEIRS`
+
+Three-way merge. Conflicts are `{ "_conflict": true, "base", "ours", "theirs" }`
+unless `--prefer ours|theirs|base`. Exit `5` if conflicts remain.
+
+```bash
+kq merge stock.utc mine.utc theirs.utc
+```
+
 `--json` on the command itself is a global flag and also selects JSON
 output.
 
@@ -285,7 +314,7 @@ A module in this index is the usual trio: `name.rim` + `name_s.rim` +
 | LTR | `ltr` | single-letter name-generation probabilities |
 | BWM | `wok` `dwk` `pwk` | vertices, faces, materials, area-transition edges |
 | TPC | `tpc` | size, format, mipmaps, trailing TXI text (not pixels) |
-| MDL | `mdl` | name, supermodel, node names, animation names (not a mesh dump) |
+| MDL | `mdl` | full model IR (nodes, meshes, controllers, animations); binary pairs a same-ResRef `.mdx` |
 | WAV | `wav` `bmu` | kind, rate, channels (not samples) |
 | Already text | `nss` `lyt` `vis` `txi` `ini` `txt` | passed through |
 

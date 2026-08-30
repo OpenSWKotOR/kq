@@ -165,6 +165,21 @@ To read a *shadowed* copy, not the winner:
 kq cat appearance.2da --from 'data/2da.bif'
 ```
 
+### Compare, patch, merge
+
+```bash
+kq delta n_bastila.utc --shadow
+kq --text delta appearance.2da --from Override --against 'data/2da.bif'
+kq delta n_bastila.utc --other /path/to/vanilla -o change.json
+kq patch n_bastila.utc change.json
+kq merge stock.utc mine.utc theirs.utc
+```
+
+`delta` compares decoded JSON (`content` only, unless `--envelope`). It is
+not a git wrapper: the document is `kq-delta-1` (JSON Patch ops). `patch`
+applies that document. `merge` is a three-way merge; leftover conflicts are
+`_conflict` objects. Exit `5` means “they differ” or “unresolved conflicts”.
+
 `--from` matches the container label `which` prints.
 
 ### Search dialogue for a speaker
@@ -320,6 +335,7 @@ cheap parse.
 | 2 | Clap rejected the command line. |
 | 3 | The query was valid and matched nothing (`ls` empty, `grep` no hits, `which`/`cat` unknown name). |
 | 4 | No install / file / folder could be resolved. |
+| 5 | `delta` found changes, or `merge` still has conflicts. |
 
 `grep` of a large install can skip individual corrupt resources (they
 do not crash the process). Retail K1 ships at least one 2DA PyKotor
@@ -330,7 +346,7 @@ itself also refuses; those become per-file errors, not a panic.
 - **Read-only.** There is no `kq write`, packer, or compiler.
 - **NCS is disassembly.** You will see `CONSTS "cdx_il"` and
   `ACTION GetObjectByTag`, not the original `.nss`.
-- **MDL is an inventory.** Node and animation names, not vertices.
+- **MDL is a full model tree.** ASCII, JSON, and binary (paired with the same-ResRef `.mdx`) share one IR: nodes, meshes, controllers, animations. There is no binary writer.
 - **TPC / WAV are metadata.** No PNG or PCM export.
 - **TGA / DDS / MVE / BIK** have no decoder yet.
 - **TSL ACTION names** are used as a superset of K1. Shared routine ids

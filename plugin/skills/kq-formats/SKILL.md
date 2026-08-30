@@ -27,7 +27,7 @@ other still-undecoded types.
 
 - NCS is a **disassembly** (`ACTION GetObjectByTag`), not recovered NSS.
 - TPC/WAV are **metadata** (TPC includes trailing TXI text). No pixels/PCM.
-- MDL is **names** (nodes, anims, supermodel), not a mesh dump.
+- MDL is a **full model IR** (nodes, meshes, controllers, animations). Binary MDL pairs a same-ResRef `.mdx`.
 
 ## How to cite a hit
 

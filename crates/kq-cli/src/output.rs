@@ -75,6 +75,22 @@ impl Out {
             s.to_string()
         }
     }
+
+    pub fn minus(&self, s: &str) -> String {
+        if self.color {
+            format!("\x1b[31m{s}\x1b[0m")
+        } else {
+            s.to_string()
+        }
+    }
+
+    pub fn plus(&self, s: &str) -> String {
+        if self.color {
+            format!("\x1b[32m{s}\x1b[0m")
+        } else {
+            s.to_string()
+        }
+    }
 }
 
 /// Report a non-fatal problem. Always stderr, never stdout.

@@ -26,6 +26,9 @@ A directory *inside* an install still means the whole game. A named *file*
 | Find a name | `kq ls <substr-or-glob>` |
 | Which file loads? | `kq which <resref>` — `*` is the winner |
 | Read it | `kq cat <resref>` |
+| Compare two copies | `kq delta A B` / `kq delta RESREF --shadow` |
+| Apply a delta | `kq patch TARGET delta.json` |
+| Three-way merge | `kq merge BASE OURS THEIRS` |
 | Search inside | `kq grep <pattern>` |
 | Reachability tree + leftovers | `kq graph` / `kq graph --json` |
 | Never reached (resources) | `kq unused -q` / `kq graph --what leftovers -q` |
@@ -57,7 +60,7 @@ If you need a flag not listed here, run `kq <cmd> --help`. Do not invent flags.
 
 ## Exit codes
 
-`0` ok, `1` runtime, `2` usage, `3` no match, `4` no install. Treat `3` as empty result, not a crash.
+`0` ok, `1` runtime, `2` usage, `3` no match, `4` no install, `5` delta differs or merge conflicts. Treat `3` as empty result, not a crash.
 
 ## Anti-patterns
 

@@ -44,7 +44,9 @@ Size, format, mipmaps, trailing TXI. No pixel payload.
 
 ## MDL
 
-Name, supermodel, classification, node names, animation names.
+Full model IR: name, supermodel, classification, node tree (meshes,
+controllers, lights, emitters), animations. Binary files include vertices
+from the companion `.mdx` when present. JSON is a 1:1 serde of that tree.
 
 ## WAV / BMU
 

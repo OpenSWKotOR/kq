@@ -7,17 +7,23 @@ mod output;
 mod read;
 mod render;
 mod resolve;
+mod resource_json;
+mod side;
 
 mod live;
 
 mod cmd {
     pub mod cache;
     pub mod cat;
+    pub mod delta;
+    pub mod export;
     pub mod grep;
     pub mod info;
     pub mod graph;
     pub mod leftovers;
     pub mod ls;
+    pub mod merge;
+    pub mod patch;
     pub mod unused;
     pub mod which;
 }
@@ -127,8 +133,17 @@ enum Command {
     Which(cmd::which::Args),
     /// Print a resource.
     Cat(cmd::cat::Args),
+    /// Compare two decoded resources.
+    #[command(visible_alias = "compare")]
+    Delta(cmd::delta::Args),
+    /// Apply a `kq delta` document to a resource.
+    Patch(cmd::patch::Args),
+    /// Three-way merge of decoded resources.
+    Merge(cmd::merge::Args),
     /// Search resource contents as text.
     Grep(cmd::grep::Args),
+    /// Write every indexed resource as JSON under `<install>_json/`.
+    Export(cmd::export::Args),
     /// Inspect or clear the index cache.
     Cache(cmd::cache::Args),
     /// List leftover resources the live graph never reaches.
@@ -154,7 +169,11 @@ fn main() -> ExitCode {
         Command::Ls(a) => cmd::ls::run(&ctx, a),
         Command::Which(a) => cmd::which::run(&ctx, a),
         Command::Cat(a) => cmd::cat::run(&ctx, a),
+        Command::Delta(a) => cmd::delta::run(&ctx, a),
+        Command::Patch(a) => cmd::patch::run(&ctx, a),
+        Command::Merge(a) => cmd::merge::run(&ctx, a),
         Command::Grep(a) => cmd::grep::run(&ctx, a),
+        Command::Export(a) => cmd::export::run(&ctx, a),
         Command::Cache(a) => cmd::cache::run(&ctx, a),
         Command::Unused(a) => cmd::unused::run(&ctx, a),
         Command::Graph(a) => cmd::graph::run(&ctx, a),

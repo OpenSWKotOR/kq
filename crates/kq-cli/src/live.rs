@@ -258,7 +258,7 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
         let Ok(bytes) = read::read(index, r) else {
             return;
         };
-        let Ok(decoded) = render::decode(&bytes, Some(r.restype), &r.filename()) else {
+        let Ok(decoded) = render::decode_resource(index, r, &bytes) else {
             return;
         };
         let mut mentions = HashSet::new();

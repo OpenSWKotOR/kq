@@ -9,6 +9,9 @@ use anyhow::Result;
 use serde_json::Value as J;
 
 use kq_format::{bwm, gff, lip, ltr, mdl, ncs, ssf, text, tlk, tpc, twoda, wav, ResType};
+use kq_index::{Index, Resource};
+
+use crate::read;
 
 /// How to print a decoded resource.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -33,9 +36,45 @@ pub enum Decoded {
     Opaque { kind: &'static str, len: usize },
 }
 
+/// Decode a resource from the index, pairing binary MDL with its MDX companion.
+pub fn decode_resource(index: &Index, r: &Resource, bytes: &[u8]) -> Result<Decoded> {
+    let mdx = companion_mdx(index, r);
+    decode_ex(bytes, mdx.as_deref(), Some(r.restype), &r.filename())
+}
+
+fn companion_mdx(index: &Index, r: &Resource) -> Option<Vec<u8>> {
+    if r.restype.extension() != Some("mdl") {
+        return None;
+    }
+    for ext in ["mdx", "mdx2"] {
+        let Some(ty) = ResType::from_extension(ext) else {
+            continue;
+        };
+        if let Some(companion) = index.resolve(&r.resref, Some(ty)) {
+            if let Ok(bytes) = read::read(index, companion) {
+                return Some(bytes);
+            }
+        }
+    }
+    None
+}
+
 /// Decode a resource. `restype` is a hint used only when sniffing is
 /// inconclusive.
 pub fn decode(bytes: &[u8], restype: Option<ResType>, name: &str) -> Result<Decoded> {
+    decode_ex(bytes, None, restype, name)
+}
+
+pub fn decode_with_mdx(
+    bytes: &[u8],
+    mdx: Option<&[u8]>,
+    restype: Option<ResType>,
+    name: &str,
+) -> Result<Decoded> {
+    decode_ex(bytes, mdx, restype, name)
+}
+
+fn decode_ex(bytes: &[u8], mdx: Option<&[u8]>, restype: Option<ResType>, name: &str) -> Result<Decoded> {
     let path = std::path::Path::new(name);
 
     if gff::sniff(bytes) {
@@ -43,7 +82,7 @@ pub fn decode(bytes: &[u8], restype: Option<ResType>, name: &str) -> Result<Deco
         return Ok(Decoded::Value(text::gff_to_json(&g)));
     }
     if twoda::sniff(bytes) {
-        let t = twoda::read(bytes, path)?;
+        let t = twoda::read_or_salvage(bytes, path)?;
         return Ok(Decoded::Value(text::twoda_to_json(&t)));
     }
     if tlk::sniff(bytes) {
@@ -75,13 +114,26 @@ pub fn decode(bytes: &[u8], restype: Option<ResType>, name: &str) -> Result<Deco
         return Ok(Decoded::Value(text::wav_to_json(&w)));
     }
     // TPC and binary MDL have no reliable magic. Restype is the hint.
+    // ASCII MDL is text and must be claimed before `looks_like_text`.
+    if mdl::sniff_ascii(bytes)
+        || (restype.is_some_and(|t| t.extension() == Some("mdl")) && mdl::sniff_binary(bytes))
+    {
+        let m = match mdx {
+            Some(ext) => mdl::read_with_mdx(bytes, ext, path)?,
+            None => mdl::read(bytes, path)?,
+        };
+        return Ok(Decoded::Value(text::mdl_to_json(&m)));
+    }
+    if restype.is_some_and(|t| matches!(t.extension(), Some("mdx") | Some("mdx2"))) {
+        return Ok(Decoded::Value(serde_json::json!({
+            "kind": "mdx",
+            "bytes": bytes.len(),
+            "note": "companion vertex buffer for the same-ResRef .mdl",
+        })));
+    }
     if restype.is_some_and(|t| t.extension() == Some("tpc")) && tpc::sniff(bytes) {
         let t = tpc::read(bytes, path)?;
         return Ok(Decoded::Value(text::tpc_to_json(&t)));
-    }
-    if restype.is_some_and(|t| t.extension() == Some("mdl")) && mdl::sniff(bytes) {
-        let m = mdl::read(bytes, path)?;
-        return Ok(Decoded::Value(text::mdl_to_json(&m)));
     }
     if restype.is_some_and(ResType::is_plain_text) || looks_like_text(bytes) {
         return Ok(Decoded::Text(decode_cp1252(bytes)));

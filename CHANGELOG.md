@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.5
+
+Full MDL/MDX model IR (ASCII + Odyssey binary + JSON) replaces the names-only
+decoder. Binary MDL pairs companion MDX for vertex data. `kq export` dumps an
+install as a JSON tree. 2DA salvage reads NUL-separated shadowed copies
+(`rims/global.rim`). `kq delta` / `kq patch` / `kq merge` compare and combine
+decoded resources (JSON out; game files stay untouched). Exit 5 means a
+delta found changes or a merge still has conflicts.
+
 ## 0.3.4
 
 JSON is the default output format (`--text` for human-readable views). No

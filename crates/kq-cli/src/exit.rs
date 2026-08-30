@@ -13,3 +13,5 @@ pub const FAILURE: i32 = 1;
 pub const NO_MATCH: i32 = 3;
 /// No KotOR installation was found at the given or inferred path.
 pub const NO_INSTALL: i32 = 4;
+/// `delta` found changes, or `merge` recorded conflicts.
+pub const DIFFER: i32 = 5;

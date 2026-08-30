@@ -101,7 +101,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         .filter_map(|&i| {
             let r = &index.resources[i as usize];
             let bytes = read::read(&index, r).ok()?;
-            let decoded = render::decode(&bytes, Some(r.restype), &r.filename()).ok()?;
+            let decoded = render::decode_resource(&index, r, &bytes).ok()?;
             // A type with no decoder renders as one placeholder line that can
             // never match a pattern. --include-binary means "search the
             // actual bytes", so force them to text instead of rendering that

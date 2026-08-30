@@ -4,6 +4,7 @@
 //! memory-map once and parse without copying, and so errors name their file.
 
 pub mod bif;
+pub mod delta;
 pub mod bwm;
 pub mod container;
 pub mod erf;

@@ -17,7 +17,7 @@ use crate::bwm::Bwm;
 use crate::gff::{Gff, Struct, Value};
 use crate::lip::Lip;
 use crate::ltr::{Ltr, LETTERS};
-use crate::mdl::Mdl;
+use crate::mdl::Model;
 use crate::ncs::{Arg, Ncs};
 use crate::ssf::{Ssf, EVENTS};
 use crate::tlk::Tlk;
@@ -110,7 +110,14 @@ pub fn twoda_to_json(t: &TwoDa) -> J {
             J::Object(m)
         })
         .collect();
-    J::Array(rows)
+    if t.warnings.is_empty() {
+        J::Array(rows)
+    } else {
+        let mut m = Map::new();
+        m.insert("_warnings".into(), json!(t.warnings));
+        m.insert("rows".into(), J::Array(rows));
+        J::Object(m)
+    }
 }
 
 /// Convert a talk table to an array indexed by StrRef.
@@ -253,16 +260,9 @@ pub fn ltr_to_json(l: &Ltr) -> J {
     json!({ "letters": l.letter_count, "singles": singles })
 }
 
-/// Convert a model inventory — names, not vertices.
-pub fn mdl_to_json(m: &Mdl) -> J {
-    json!({
-        "name": m.name,
-        "supermodel": m.supermodel,
-        "classification": m.classification,
-        "node_count": m.node_count,
-        "names": m.names,
-        "animations": m.animations,
-    })
+/// Convert an MDL IR tree to JSON (serde of [`Model`]).
+pub fn mdl_to_json(m: &Model) -> J {
+    crate::mdl::to_json_value(m)
 }
 
 /// Convert audio metadata. Samples stay out.
