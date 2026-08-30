@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use kotor_formats::gff::{
-    FieldValue, GffParseOptions, GffStruct as SharedStruct, GffFile as SharedGff,
+    FieldValue, GffFile as SharedGff, GffParseOptions, GffStruct as SharedStruct,
 };
 
 use crate::error::Result;
@@ -211,7 +211,10 @@ mod tests {
             f.root
                 .add_field(GffField::new("Tag", Fv::ExoString("don\u{92}t".into())));
         });
-        assert_eq!(gff.root.get("Tag"), Some(&Value::Str("don\u{2019}t".into())));
+        assert_eq!(
+            gff.root.get("Tag"),
+            Some(&Value::Str("don\u{2019}t".into()))
+        );
     }
 
     #[test]
@@ -219,7 +222,8 @@ mod tests {
         let gff = round_trip(|f| {
             let mut loc = ExoLocString::default();
             loc.add_string(0, "A Blade").unwrap();
-            f.root.add_field(GffField::new("Name", Fv::ExoLocString(loc)));
+            f.root
+                .add_field(GffField::new("Name", Fv::ExoLocString(loc)));
         });
 
         match gff.root.get("Name") {
@@ -246,8 +250,7 @@ mod tests {
             Some(Value::List(items)) => {
                 assert_eq!(items.len(), 1);
                 assert_eq!(items[0].id, 9);
-                let names: Vec<&str> =
-                    items[0].fields.iter().map(|(k, _)| k.as_str()).collect();
+                let names: Vec<&str> = items[0].fields.iter().map(|(k, _)| k.as_str()).collect();
                 assert_eq!(names, ["First", "Second"]);
             }
             other => panic!("{other:?}"),

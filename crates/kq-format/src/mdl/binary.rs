@@ -381,8 +381,10 @@ impl<'a> Ctx<'a> {
                 self.apply_skin(&mut mesh, &tm, &s)?;
             }
             if tm.dirt_enabled != 0 {
-                node.extras
-                    .insert("dirt_enabled".into(), Property::Number(tm.dirt_enabled as f64));
+                node.extras.insert(
+                    "dirt_enabled".into(),
+                    Property::Number(tm.dirt_enabled as f64),
+                );
             }
             if tm.hologram_donotdraw != 0 {
                 node.extras.insert(
@@ -397,10 +399,19 @@ impl<'a> Ctx<'a> {
             node.aabb = self.read_aabb(aabb_off)?;
         }
 
-        if controller_count > 0 && ptr_ok(controllers_off, self.geom.len(), controller_count * CONTROLLER_SIZE)
+        if controller_count > 0
+            && ptr_ok(
+                controllers_off,
+                self.geom.len(),
+                controller_count * CONTROLLER_SIZE,
+            )
         {
-            node.controllers =
-                self.read_controllers(controllers_off, controller_data_off, controller_count, flags)?;
+            node.controllers = self.read_controllers(
+                controllers_off,
+                controller_data_off,
+                controller_count,
+                flags,
+            )?;
         }
 
         if child_count > 0 && ptr_ok(children_off, self.geom.len(), child_count * 4) {
@@ -411,8 +422,7 @@ impl<'a> Ctx<'a> {
             }
             for child_off in child_offs {
                 if ptr_ok(child_off, self.geom.len(), NODE_HEADER) {
-                    node.children
-                        .push(self.load_node(child_off, Some(&name))?);
+                    node.children.push(self.load_node(child_off, Some(&name))?);
                 }
             }
         }
@@ -587,20 +597,23 @@ impl<'a> Ctx<'a> {
                     got_positions = true;
                 }
                 if tm.mdx_data_bitmap & MDX_NORMAL != 0 {
-                    if let Some(n) = mdx_vec3(self.mdx, row.saturating_add(tm.mdx_normal_off as usize))
+                    if let Some(n) =
+                        mdx_vec3(self.mdx, row.saturating_add(tm.mdx_normal_off as usize))
                     {
                         vert.normal = Some(n);
                     }
                 }
                 if tm.mdx_data_bitmap & MDX_TEX0 != 0 {
-                    if let Some(uv) = mdx_vec2(self.mdx, row.saturating_add(tm.mdx_tex0_off as usize))
+                    if let Some(uv) =
+                        mdx_vec2(self.mdx, row.saturating_add(tm.mdx_tex0_off as usize))
                     {
                         vert.uv = Some(uv);
                         tverts.push(uv);
                     }
                 }
                 if tm.mdx_data_bitmap & MDX_TEX1 != 0 {
-                    if let Some(uv) = mdx_vec2(self.mdx, row.saturating_add(tm.mdx_tex1_off as usize))
+                    if let Some(uv) =
+                        mdx_vec2(self.mdx, row.saturating_add(tm.mdx_tex1_off as usize))
                     {
                         vert.uv2 = Some(uv);
                         tverts1.push(uv);
@@ -609,9 +622,7 @@ impl<'a> Ctx<'a> {
             }
         }
 
-        if !got_positions
-            && vcount > 0
-            && ptr_ok(tm.vertices_offset, self.geom.len(), vcount * 12)
+        if !got_positions && vcount > 0 && ptr_ok(tm.vertices_offset, self.geom.len(), vcount * 12)
         {
             let mut r = self.at(tm.vertices_offset)?;
             for v in &mut verts {
@@ -727,8 +738,10 @@ impl<'a> Ctx<'a> {
             let row = base.saturating_add(i.saturating_mul(stride));
             let mut influences = Vec::new();
             for k in 0..4 {
-                let w = mdx_f32(self.mdx, row.saturating_add(skin.mdx_weights + k * 4)).unwrap_or(0.0);
-                let raw = mdx_f32(self.mdx, row.saturating_add(skin.mdx_bones + k * 4)).unwrap_or(-1.0);
+                let w =
+                    mdx_f32(self.mdx, row.saturating_add(skin.mdx_weights + k * 4)).unwrap_or(0.0);
+                let raw =
+                    mdx_f32(self.mdx, row.saturating_add(skin.mdx_bones + k * 4)).unwrap_or(-1.0);
                 if w <= 0.0 {
                     continue;
                 }
@@ -1105,10 +1118,6 @@ fn decompress_quat(packed: u32) -> Quat {
     let y = (((packed >> 11) & 0x7FF) as f32 / 1023.0) - 1.0;
     let z = ((packed >> 22) as f32 / 511.0) - 1.0;
     let mag2 = x * x + y * y + z * z;
-    let w = if mag2 < 1.0 {
-        (1.0 - mag2).sqrt()
-    } else {
-        0.0
-    };
+    let w = if mag2 < 1.0 { (1.0 - mag2).sqrt() } else { 0.0 };
     Quat { x, y, z, w }
 }

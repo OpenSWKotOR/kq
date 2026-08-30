@@ -222,9 +222,7 @@ pub fn read_salvage(data: &[u8], path: &Path) -> Result<TwoDa> {
             let cell = if idx < offsets.len() {
                 let off = offsets[idx];
                 match data_start.checked_add(off) {
-                    Some(cell_offset) if cell_offset < data.len() => {
-                        decode_cstr(data, cell_offset)
-                    }
+                    Some(cell_offset) if cell_offset < data.len() => decode_cstr(data, cell_offset),
                     _ => {
                         if col == 0 {
                             warnings.push(format!(
@@ -434,7 +432,11 @@ mod tests {
 
     #[test]
     fn strict_read_tab_separated_headers() {
-        let data = build_tab_2da(&["label", "value"], &["0", "1"], &[&["a", "1"], &["b", "2"]]);
+        let data = build_tab_2da(
+            &["label", "value"],
+            &["0", "1"],
+            &[&["a", "1"], &["b", "2"]],
+        );
         let t = read(&data, Path::new("test.2da")).unwrap();
         assert_eq!(t.columns, vec!["label", "value"]);
         assert_eq!(t.labels, vec!["0", "1"]);

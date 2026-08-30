@@ -451,7 +451,11 @@ mod tests {
             ("O", FieldValue::Double(2.25), "2.25"),
             ("R", FieldValue::ResRef("res".into()), "res"),
             ("P", FieldValue::Position([1.0, 2.0, 3.0]), "1|2|3"),
-            ("Q", FieldValue::Orientation([0.0, 0.0, 0.0, 1.0]), "0|0|0|1"),
+            (
+                "Q",
+                FieldValue::Orientation([0.0, 0.0, 0.0, 1.0]),
+                "0|0|0|1",
+            ),
             ("V", FieldValue::Void(vec![0xDE, 0xAD]), "0xdead"),
         ];
 
@@ -540,7 +544,10 @@ mod tests {
         let mut modified_item = GffStruct::new();
         modified_item.add_field(field("CostValue", FieldValue::Int(12)));
 
-        let base = file(vec![field("PropertiesList", FieldValue::List(vec![base_item]))]);
+        let base = file(vec![field(
+            "PropertiesList",
+            FieldValue::List(vec![base_item]),
+        )]);
         let modified = file(vec![field(
             "PropertiesList",
             FieldValue::List(vec![modified_item]),
@@ -619,10 +626,7 @@ mod tests {
         second.add_field(field("B", FieldValue::Int(2)));
 
         let base = file(vec![]);
-        let modified = file(vec![field(
-            "Items",
-            FieldValue::List(vec![first, second]),
-        )]);
+        let modified = file(vec![field("Items", FieldValue::List(vec![first, second]))]);
 
         let mut ini = ChangesIni::new();
         ini.add_gff("my_item.uti", &base, &modified);

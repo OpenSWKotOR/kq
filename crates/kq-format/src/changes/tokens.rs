@@ -101,9 +101,7 @@ impl ChangesIni {
                 .created_rows
                 .iter()
                 .filter(|r| {
-                    &r.section != section_name
-                        && r.label == value
-                        && r.label != r.index.to_string()
+                    &r.section != section_name && r.label == value && r.label != r.index.to_string()
                 })
                 .collect();
 
@@ -127,7 +125,9 @@ impl ChangesIni {
             // Reuse a slot already handed to this row and capture kind.
             let existing = assigned
                 .iter()
-                .find(|(s, _, is_label)| *s == row_section && *is_label == (capture_kind == "RowLabel"))
+                .find(|(s, _, is_label)| {
+                    *s == row_section && *is_label == (capture_kind == "RowLabel")
+                })
                 .map(|(_, token, _)| *token);
             let token = match existing {
                 Some(token) => token,
@@ -198,8 +198,10 @@ mod tests {
 
     fn creature(appearance: u16) -> GffFile {
         let mut f = GffFile::new_file("UTC ", "creature.utc");
-        f.root
-            .add_field(GffField::new("Appearance_Type", FieldValue::Word(appearance)));
+        f.root.add_field(GffField::new(
+            "Appearance_Type",
+            FieldValue::Word(appearance),
+        ));
         f
     }
 

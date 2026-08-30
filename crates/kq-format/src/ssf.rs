@@ -55,8 +55,8 @@ pub fn sniff(data: &[u8]) -> bool {
 }
 
 pub fn read(data: &[u8], path: &Path) -> Result<Ssf> {
-    let file = SsfFile::parse(data, &path.to_string_lossy())
-        .map_err(|err| format_error(err, path))?;
+    let file =
+        SsfFile::parse(data, &path.to_string_lossy()).map_err(|err| format_error(err, path))?;
 
     // The shared reader carries all 40 on-disk slots. Only the first 28 are
     // named events; the rest are unused in both games and have nothing to

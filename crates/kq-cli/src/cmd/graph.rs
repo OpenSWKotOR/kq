@@ -105,12 +105,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let index = ctx.index()?;
     let graph = live::build(&index)?;
 
-    let in_scope = unused::candidate_ids(
-        &index,
-        &args.filter,
-        args.no_assets,
-        args.winners_only,
-    )?;
+    let in_scope = unused::candidate_ids(&index, &args.filter, args.no_assets, args.winners_only)?;
     let winners = unused::winner_set(&index, &in_scope);
     let leftover_ids = unused::leftover_ids(
         &index,
@@ -149,7 +144,13 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     }
 
     if args.summary {
-        return write_summary(ctx, &graph, used_ids.len(), leftover_ids.len(), leftover_strings.len());
+        return write_summary(
+            ctx,
+            &graph,
+            used_ids.len(),
+            leftover_ids.len(),
+            leftover_strings.len(),
+        );
     }
 
     let mut catalog: Vec<unused::Row<'_>> = in_scope
@@ -192,11 +193,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
                 } else {
                     Vec::new()
                 },
-                strings: if show_used {
-                    used_strings
-                } else {
-                    Vec::new()
-                },
+                strings: if show_used { used_strings } else { Vec::new() },
                 tree: if show_used { tree } else { Vec::new() },
                 by_module: if show_used {
                     used_by_module
@@ -326,7 +323,11 @@ struct TreeNode {
     children: Vec<TreeNode>,
 }
 
-fn build_text_forest(index: &kq_index::Index, graph: &LiveGraph, max_depth: usize) -> Vec<TreeNode> {
+fn build_text_forest(
+    index: &kq_index::Index,
+    graph: &LiveGraph,
+    max_depth: usize,
+) -> Vec<TreeNode> {
     let children_map = children_map(graph);
     graph
         .seed_ids
@@ -335,7 +336,11 @@ fn build_text_forest(index: &kq_index::Index, graph: &LiveGraph, max_depth: usiz
         .collect()
 }
 
-fn build_json_forest<'a>(index: &'a kq_index::Index, graph: &'a LiveGraph, max_depth: usize) -> Vec<Node<'a>> {
+fn build_json_forest<'a>(
+    index: &'a kq_index::Index,
+    graph: &'a LiveGraph,
+    max_depth: usize,
+) -> Vec<Node<'a>> {
     let children_map = children_map(graph);
     graph
         .seed_ids
@@ -466,13 +471,7 @@ fn print_tree(
     }
     let child_prefix = format!("{prefix}{}   ", if is_last { " " } else { "│" });
     for (i, child) in node.children.iter().enumerate() {
-        print_tree(
-            w,
-            child,
-            &child_prefix,
-            i + 1 == node.children.len(),
-            o,
-        )?;
+        print_tree(w, child, &child_prefix, i + 1 == node.children.len(), o)?;
     }
     Ok(())
 }

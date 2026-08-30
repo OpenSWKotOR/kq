@@ -108,10 +108,8 @@ fn diff_aligned(left: &[J], right: &[J], key: &str, prefix: &str, ops: &mut Vec<
         .iter()
         .filter_map(|v| key_of(v, key).map(|k| (k, v)))
         .collect();
-    let left_keys: std::collections::BTreeSet<String> = left
-        .iter()
-        .filter_map(|v| key_of(v, key))
-        .collect();
+    let left_keys: std::collections::BTreeSet<String> =
+        left.iter().filter_map(|v| key_of(v, key)).collect();
 
     let mut removals = Vec::new();
     for (i, lv) in left.iter().enumerate() {

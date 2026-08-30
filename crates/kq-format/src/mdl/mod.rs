@@ -170,11 +170,7 @@ donemodel test
         assert_eq!(second.name, first.name);
         assert_eq!(second.node_names(), first.node_names());
         assert_eq!(second.animation_names(), first.animation_names());
-        let mesh2 = second
-            .root
-            .as_ref()
-            .unwrap()
-            .children[0]
+        let mesh2 = second.root.as_ref().unwrap().children[0]
             .mesh
             .as_ref()
             .unwrap();

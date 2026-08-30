@@ -17,9 +17,9 @@ mod cmd {
     pub mod cat;
     pub mod delta;
     pub mod export;
+    pub mod graph;
     pub mod grep;
     pub mod info;
-    pub mod graph;
     pub mod leftovers;
     pub mod ls;
     pub mod merge;

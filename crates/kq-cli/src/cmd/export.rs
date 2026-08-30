@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use rayon::prelude::*;
 use serde::Serialize;
 
@@ -66,7 +66,10 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let mut ids = args.filter.select(&index, "")?;
     ids.sort_unstable();
     let total = ids.len();
-    output::warn(format!("exporting {total} resources to {}…", out_dir.display()));
+    output::warn(format!(
+        "exporting {total} resources to {}…",
+        out_dir.display()
+    ));
 
     let exported = AtomicUsize::new(0);
     let failed = AtomicUsize::new(0);
@@ -95,7 +98,8 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
 
     if !err_lines.is_empty() {
         let err_path = out_dir.join("_export_errors.txt");
-        fs::write(&err_path, err_lines.join("\n")).with_context(|| err_path.display().to_string())?;
+        fs::write(&err_path, err_lines.join("\n"))
+            .with_context(|| err_path.display().to_string())?;
         output::warn(format!(
             "{failed} resources failed; see {}",
             err_path.display()
@@ -134,7 +138,8 @@ fn export_one(index: &kq_index::Index, r: &kq_index::Resource, out_dir: &Path) -
     let rel = resource_json::export_relpath(index, r);
     let dest = out_dir.join(&rel);
     if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("cannot create {}", parent.display()))?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("cannot create {}", parent.display()))?;
     }
 
     let bytes = read::read(index, r)?;
@@ -152,9 +157,7 @@ pub fn default_output_dir(root: &Path) -> PathBuf {
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "install".into());
-    root.parent()
-        .unwrap_or(root)
-        .join(format!("{name}_json"))
+    root.parent().unwrap_or(root).join(format!("{name}_json"))
 }
 
 #[cfg(test)]

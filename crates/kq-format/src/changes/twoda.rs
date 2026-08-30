@@ -47,7 +47,12 @@ impl ChangesIni {
             // rows this diff appends carry their own value.
             let shared_rows = base.row_count().min(modified.row_count());
             let values: Vec<String> = (0..shared_rows)
-                .map(|row| modified.cell(row, column).unwrap_or(default_cell()).to_string())
+                .map(|row| {
+                    modified
+                        .cell(row, column)
+                        .unwrap_or(default_cell())
+                        .to_string()
+                })
                 .collect();
 
             let default = most_common(&values).unwrap_or_else(|| default_cell().to_string());
@@ -333,7 +338,10 @@ mod tests {
         let mut ini = ChangesIni::new();
         ini.add_twoda("spells.2da", &base, &modified);
 
-        assert!(ini.warnings().iter().any(|w| w.contains("row(s) were removed")));
+        assert!(ini
+            .warnings()
+            .iter()
+            .any(|w| w.contains("row(s) were removed")));
     }
 
     #[test]

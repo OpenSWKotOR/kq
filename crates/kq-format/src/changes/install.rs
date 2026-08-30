@@ -95,7 +95,10 @@ mod tests {
         let mut ini = ChangesIni::new();
         ini.add_install(
             "override",
-            &[InstallFile::keep("new_icon.tga"), InstallFile::keep("extra.tga")],
+            &[
+                InstallFile::keep("new_icon.tga"),
+                InstallFile::keep("extra.tga"),
+            ],
         );
         let out = ini.render();
 

@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use serde_json::Value as J;
 
 use kq_format::ResType;
@@ -109,11 +109,7 @@ fn load_file(path: &Path, content_only: bool) -> Result<Loaded> {
 
 fn from_json_text(text: String, label: &str, content_only: bool) -> Result<Loaded> {
     let v: J = serde_json::from_str(&text).with_context(|| format!("{label}: not JSON"))?;
-    let value = if content_only {
-        unwrap_content(&v)
-    } else {
-        v
-    };
+    let value = if content_only { unwrap_content(&v) } else { v };
     Ok(Loaded {
         label: label.to_string(),
         value,
@@ -123,7 +119,10 @@ fn from_json_text(text: String, label: &str, content_only: bool) -> Result<Loade
 /// kq `cat` envelopes have `content` plus `resref` / `path`.
 fn unwrap_content(v: &J) -> J {
     match v {
-        J::Object(m) if m.contains_key("content") && (m.contains_key("resref") || m.contains_key("path")) => {
+        J::Object(m)
+            if m.contains_key("content")
+                && (m.contains_key("resref") || m.contains_key("path")) =>
+        {
             m.get("content").cloned().unwrap_or(J::Null)
         }
         other => other.clone(),
@@ -170,4 +169,3 @@ fn decode_one(index: &Index, r: &kq_index::Resource, content_only: bool) -> Resu
         value,
     })
 }
-

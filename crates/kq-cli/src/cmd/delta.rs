@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use serde::Serialize;
 
 use kq_format::delta::{self, Op};
@@ -96,7 +96,10 @@ fn load_pair(ctx: &Ctx, args: &Args, content_only: bool) -> Result<(Loaded, Load
     if args.right.is_none() && args.other.is_none() && args.against.is_none() {
         bail!("RIGHT is required unless --shadow, --against, or --other is set");
     }
-    let other = args.other.as_deref().filter(|_| !looks_like_file(right_spec));
+    let other = args
+        .other
+        .as_deref()
+        .filter(|_| !looks_like_file(right_spec));
     let right = side::load(
         ctx,
         right_spec,
@@ -120,13 +123,14 @@ fn print_text(ctx: &Ctx, left: &Loaded, right: &Loaded, ops: &[Op]) {
     }
     for op in ops {
         let path = delta::pointer_to_gron(op.path());
-        let path = if path.is_empty() { "<root>" } else { path.as_str() };
+        let path = if path.is_empty() {
+            "<root>"
+        } else {
+            path.as_str()
+        };
         match op {
             Op::Remove { old, .. } => {
-                println!(
-                    "{}",
-                    ctx.out.minus(&format!("- {path} = {}", fmt_old(old)))
-                );
+                println!("{}", ctx.out.minus(&format!("- {path} = {}", fmt_old(old))));
             }
             Op::Add { value, .. } => {
                 println!(
@@ -135,10 +139,7 @@ fn print_text(ctx: &Ctx, left: &Loaded, right: &Loaded, ops: &[Op]) {
                 );
             }
             Op::Replace { old, value, .. } => {
-                println!(
-                    "{}",
-                    ctx.out.minus(&format!("- {path} = {}", fmt_old(old)))
-                );
+                println!("{}", ctx.out.minus(&format!("- {path} = {}", fmt_old(old))));
                 println!(
                     "{}",
                     ctx.out.plus(&format!("+ {path} = {}", compact(value)))

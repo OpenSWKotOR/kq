@@ -74,7 +74,12 @@ pub fn decode_with_mdx(
     decode_ex(bytes, mdx, restype, name)
 }
 
-fn decode_ex(bytes: &[u8], mdx: Option<&[u8]>, restype: Option<ResType>, name: &str) -> Result<Decoded> {
+fn decode_ex(
+    bytes: &[u8],
+    mdx: Option<&[u8]>,
+    restype: Option<ResType>,
+    name: &str,
+) -> Result<Decoded> {
     let path = std::path::Path::new(name);
 
     if gff::sniff(bytes) {
