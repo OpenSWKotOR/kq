@@ -295,7 +295,7 @@ source = "git+https://github.com/arrenkaetris/kotor-formats?tag=v0.1.0#2d7016428
 
 [[package]]
 name = "kq-cli"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -310,7 +310,7 @@ dependencies = [
 
 [[package]]
 name = "kq-format"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "base64",
  "kotor-formats",
@@ -322,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "kq-index"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "dirs",
