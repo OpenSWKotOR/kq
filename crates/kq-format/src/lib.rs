@@ -19,6 +19,7 @@ pub mod ncs_actions;
 pub mod reader;
 pub mod restype;
 pub mod rim;
+mod shared;
 pub mod ssf;
 pub mod text;
 pub mod tlk;

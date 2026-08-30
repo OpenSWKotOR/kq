@@ -35,6 +35,7 @@ use std::path::Path;
 
 use crate::error::{FormatError, Result};
 use crate::reader::{decode_cstr, Reader};
+use crate::shared::{cp1252_display, format_error};
 
 /// Emitted whenever [`read_salvage`] (or [`read_or_salvage`] after strict failure)
 /// parses a table. Kept stable so agents can detect salvage output.
@@ -70,71 +71,43 @@ pub fn sniff(data: &[u8]) -> bool {
 }
 
 /// Strict V2.b deserializer — tab-separated column header block only.
+///
+/// The byte layout lives in the shared `kotor-formats` crate, so this reader
+/// and OdyPatcher's writer cannot drift on offsets or field widths. The result
+/// is narrowed here into kq's flat, query-shaped [`TwoDa`].
 pub fn read(data: &[u8], path: &Path) -> Result<TwoDa> {
-    let mut r = Reader::new(data, path);
-    let sig = r.slice_at(0, 8)?;
-    if sig != b"2DA V2.b" {
-        return Err(FormatError::BadSignature {
-            path: path.to_path_buf(),
-            expected: "2DA V2.b",
-            found: String::from_utf8_lossy(sig).into_owned(),
-        });
-    }
-    let mut pos = 8;
-    while pos < data.len() && (data[pos] == b'\n' || data[pos] == b'\r') {
-        pos += 1;
-    }
+    reject_unterminated_header(data, path)?;
 
-    // Column headers: tab-separated, terminated by NUL.
-    let start = pos;
-    while pos < data.len() && data[pos] != 0 {
-        pos += 1;
-    }
-    let header = String::from_utf8_lossy(&data[start..pos]);
-    let columns: Vec<String> = header
-        .split('\t')
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect();
-    pos += 1;
+    let table = kotor_formats::twoda::TwoDaFile::parse(data, &path.to_string_lossy())
+        .map_err(|err| format_error(err, path))?;
 
-    r.seek(pos)?;
-    let row_count = r.u32()? as usize;
+    let cell = |text: &str| cp1252_display(text);
+    let columns: Vec<String> = (0..table.column_count())
+        .map(|c| {
+            table
+                .column_label(c)
+                .map(cell)
+                .map_err(|err| format_error(err, path))
+        })
+        .collect::<Result<_>>()?;
 
-    let mut labels = Vec::with_capacity(row_count);
-    let mut p = r.position();
-    for _ in 0..row_count {
-        if p > data.len() {
-            return Err(r.malformed(format!(
-                "row-label table ends before all {row_count} labels were read"
-            )));
-        }
-        let start = p;
-        while p < data.len() && data[p] != b'\t' {
-            p += 1;
-        }
-        labels.push(String::from_utf8_lossy(&data[start..p]).to_string());
-        p += 1;
-    }
-
-    let cell_count = row_count.saturating_mul(columns.len());
-    r.seek(p.min(data.len()))?;
-    let mut offsets = Vec::with_capacity(cell_count);
-    for _ in 0..cell_count {
-        offsets.push(r.u16()? as usize);
-    }
-    let _data_size = r.u16()?;
-    let data_start = r.position();
-
-    let mut rows = Vec::with_capacity(row_count);
-    for row in 0..row_count {
+    let mut labels = Vec::with_capacity(table.row_count());
+    let mut rows = Vec::with_capacity(table.row_count());
+    for row in 0..table.row_count() {
+        labels.push(
+            table
+                .row_label(row)
+                .map(cell)
+                .map_err(|err| format_error(err, path))?,
+        );
         let mut cells = Vec::with_capacity(columns.len());
-        for col in 0..columns.len() {
-            let off = offsets[row * columns.len() + col];
-            let cell_offset = data_start.checked_add(off).ok_or_else(|| {
-                r.malformed(format!("cell offset overflow at row {row}, column {col}"))
-            })?;
-            cells.push(decode_cstr(data, cell_offset));
+        for column in 0..table.column_count() {
+            cells.push(
+                table
+                    .cell(row, column)
+                    .map(cell)
+                    .map_err(|err| format_error(err, path))?,
+            );
         }
         rows.push(cells);
     }
@@ -145,6 +118,31 @@ pub fn read(data: &[u8], path: &Path) -> Result<TwoDa> {
         rows,
         warnings: Vec::new(),
     })
+}
+
+/// Reject a column header whose last name is not TAB-terminated.
+///
+/// Every column name in a conformant V2.b table is followed by a TAB,
+/// including the last one, and the shared reader emits a column only when it
+/// sees that TAB. A header ending `…\tvalue\0` would therefore lose `value`
+/// silently. Erroring here instead lets [`read_or_salvage`] treat the file as
+/// non-standard rather than quietly handing back a table one column short.
+fn reject_unterminated_header(data: &[u8], path: &Path) -> Result<()> {
+    let mut pos = 8;
+    while pos < data.len() && (data[pos] == b'\n' || data[pos] == b'\r') {
+        pos += 1;
+    }
+    let start = pos;
+    while pos < data.len() && data[pos] != 0 {
+        pos += 1;
+    }
+    if pos > start && data[pos - 1] != b'\t' {
+        let r = Reader::new(data, path);
+        return Err(r.malformed(
+            "column header block is not TAB-terminated; the last column name would be lost",
+        ));
+    }
+    Ok(())
 }
 
 /// Heuristic parser for non-standard 2DA copies (see module docs — `rims/`).
@@ -368,11 +366,10 @@ mod tests {
 
     fn build_tab_2da(columns: &[&str], labels: &[&str], cells: &[&[&str]]) -> Vec<u8> {
         let mut out = b"2DA V2.b\n".to_vec();
-        for (i, c) in columns.iter().enumerate() {
-            if i > 0 {
-                out.push(b'\t');
-            }
+        for c in columns {
             out.extend_from_slice(c.as_bytes());
+            // Every column name is TAB-terminated, the last one included.
+            out.push(b'\t');
         }
         out.push(0);
         out.extend_from_slice(&(labels.len() as u32).to_le_bytes());
@@ -443,6 +440,16 @@ mod tests {
         assert_eq!(t.labels, vec!["0", "1"]);
         assert_eq!(t.rows[0][1], "1");
         assert!(t.warnings.is_empty());
+    }
+
+    #[test]
+    fn strict_read_rejects_a_header_missing_its_final_tab() {
+        // Dropping the trailing TAB used to cost the last column silently;
+        // it is now reported so read_or_salvage can take over.
+        let mut data = b"2DA V2.b\n".to_vec();
+        data.extend_from_slice(b"label\tvalue\0");
+        data.extend_from_slice(&0u32.to_le_bytes());
+        assert!(read(&data, Path::new("test.2da")).is_err());
     }
 
     #[test]

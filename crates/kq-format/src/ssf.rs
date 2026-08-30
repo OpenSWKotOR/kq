@@ -7,8 +7,10 @@
 
 use std::path::Path;
 
+use kotor_formats::ssf::SsfFile;
+
 use crate::error::Result;
-use crate::reader::Reader;
+use crate::shared::format_error;
 
 /// The 28 sound-event slots, in on-disk order. Matches PyKotor's `SSFSound`.
 pub const EVENTS: [&str; 28] = [
@@ -53,15 +55,14 @@ pub fn sniff(data: &[u8]) -> bool {
 }
 
 pub fn read(data: &[u8], path: &Path) -> Result<Ssf> {
-    let mut r = Reader::new(data, path);
-    r.expect_signature("SSF V1.1")?;
-    r.seek(8)?;
-    let table_offset = r.u32()? as usize;
-    r.seek(table_offset)?;
+    let file = SsfFile::parse(data, &path.to_string_lossy())
+        .map_err(|err| format_error(err, path))?;
 
+    // The shared reader carries all 40 on-disk slots. Only the first 28 are
+    // named events; the rest are unused in both games and have nothing to
+    // show, so the query view stops there.
     let mut sounds = [-1i64; 28];
-    for slot in &mut sounds {
-        let raw = r.u32()?;
+    for (slot, &raw) in sounds.iter_mut().zip(file.entries().iter()) {
         *slot = if raw == 0xFFFF_FFFF { -1 } else { raw as i64 };
     }
     Ok(Ssf { sounds })
