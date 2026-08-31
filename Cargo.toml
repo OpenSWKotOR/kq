@@ -19,11 +19,10 @@ rayon = "1"
 clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 
 # One tag for all three: cargo resolves a git source once, so every dependency
-# taken from a repository has to name the same ref. kotor-diff-v0.2.0 is the
-# newest, and carries kotor-formats 0.1.1 and kotor-ncs-isa 0.1.1 alongside it.
-kotor-ncs-isa = { git = "https://github.com/arrenkaetris/kotor-formats", tag = "kotor-diff-v0.2.0" }
-kotor-formats = { git = "https://github.com/arrenkaetris/kotor-formats", tag = "kotor-diff-v0.2.0" }
-kotor-diff = { git = "https://github.com/arrenkaetris/kotor-formats", tag = "kotor-diff-v0.2.0", features = ["json"] }
+# taken from a repository has to name the same ref.
+kotor-ncs-isa = { git = "https://github.com/arrenkaetris/kotor-formats", tag = "v0.3.0" }
+kotor-formats = { git = "https://github.com/arrenkaetris/kotor-formats", tag = "v0.3.0" }
+kotor-diff = { git = "https://github.com/arrenkaetris/kotor-formats", tag = "v0.3.0", features = ["json"] }
 
 # To work against a local kotor-formats checkout instead, uncomment:
 # [patch."https://github.com/arrenkaetris/kotor-formats"]
