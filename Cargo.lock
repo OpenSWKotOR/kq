@@ -284,8 +284,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "kotor-diff"
+version = "0.1.0"
+source = "git+https://github.com/arrenkaetris/kotor-formats?tag=v0.1.1#123f7ecaa0cd9e87d1d2a537f3c288d098097af1"
+dependencies = [
+ "kotor-formats",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "kotor-formats"
+version = "0.1.1"
+source = "git+https://github.com/arrenkaetris/kotor-formats?tag=v0.1.1#123f7ecaa0cd9e87d1d2a537f3c288d098097af1"
+
+[[package]]
+name = "kotor-ncs-isa"
+version = "0.1.0"
+source = "git+https://github.com/arrenkaetris/kotor-formats?tag=v0.1.1#123f7ecaa0cd9e87d1d2a537f3c288d098097af1"
+
+[[package]]
 name = "kq-cli"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -300,9 +320,12 @@ dependencies = [
 
 [[package]]
 name = "kq-format"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "base64",
+ "kotor-diff",
+ "kotor-formats",
+ "kotor-ncs-isa",
  "serde",
  "serde_json",
  "thiserror",
@@ -310,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "kq-index"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "dirs",

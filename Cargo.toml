@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/kq-format", "crates/kq-index", "crates/kq-cli"]
 
 [workspace.package]
-version = "0.3.5"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.82"
 license = "MIT"
@@ -17,3 +17,13 @@ serde_json = { version = "1", features = ["preserve_order"] }
 memmap2 = "0.9"
 rayon = "1"
 clap = { version = "4", features = ["derive", "env", "wrap_help"] }
+
+kotor-ncs-isa = { git = "https://github.com/arrenkaetris/kotor-formats", tag = "v0.1.1" }
+kotor-formats = { git = "https://github.com/arrenkaetris/kotor-formats", tag = "v0.1.1" }
+kotor-diff = { git = "https://github.com/arrenkaetris/kotor-formats", tag = "v0.1.1", features = ["json"] }
+
+# To work against a local kotor-formats checkout instead, uncomment:
+# [patch."https://github.com/arrenkaetris/kotor-formats"]
+# kotor-ncs-isa = { path = "../kotor-formats/crates/kotor-ncs-isa" }
+# kotor-formats = { path = "../kotor-formats/crates/kotor-formats" }
+# kotor-diff = { path = "../kotor-formats/crates/kotor-diff" }

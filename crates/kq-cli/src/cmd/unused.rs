@@ -93,12 +93,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         args.no_assets,
         args.winners_only,
     )?;
-    let all_candidates = candidate_ids(
-        &index,
-        &args.filter,
-        args.no_assets,
-        args.winners_only,
-    )?;
+    let all_candidates = candidate_ids(&index, &args.filter, args.no_assets, args.winners_only)?;
     let candidate_count = all_candidates.len();
     let winners = winner_set(&index, &all_candidates);
     let by_type_rows = count_by_type(&index, &candidates);
@@ -295,22 +290,16 @@ pub fn write_resource_rows(
         let r = &index.resources[i as usize];
         if ctx.out.json {
             if quiet {
-                ctx.out.json_line(w, &serde_json::json!({ "path": index.virt_path(r) }))?;
+                ctx.out
+                    .json_line(w, &serde_json::json!({ "path": index.virt_path(r) }))?;
             } else {
-                ctx.out.json_line(
-                    w,
-                    &resource_row(index, i, graph, winners, "leftover"),
-                )?;
+                ctx.out
+                    .json_line(w, &resource_row(index, i, graph, winners, "leftover"))?;
             }
         } else if quiet {
             writeln!(w, "{}", index.virt_path(r))?;
         } else {
-            writeln!(
-                w,
-                "{}  {:>10}",
-                ctx.out.accent(&index.virt_path(r)),
-                r.size
-            )?;
+            writeln!(w, "{}  {:>10}", ctx.out.accent(&index.virt_path(r)), r.size)?;
         }
     }
     if !ctx.out.json && !quiet && limit > 0 && unused_count > limit {

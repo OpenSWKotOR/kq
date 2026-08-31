@@ -83,12 +83,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         } else if args.quiet {
             writeln!(w, "{}", index.virt_path(r))?;
         } else {
-            writeln!(
-                w,
-                "{}  {:>10}",
-                ctx.out.accent(&index.virt_path(r)),
-                r.size
-            )?;
+            writeln!(w, "{}  {:>10}", ctx.out.accent(&index.virt_path(r)), r.size)?;
         }
     }
 

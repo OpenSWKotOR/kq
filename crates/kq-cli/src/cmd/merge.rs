@@ -126,8 +126,7 @@ fn print_text(ctx: &Ctx, report: &Report<'_>) {
     if report.conflicts > 0 {
         println!(
             "{}",
-            ctx.out
-                .minus(&format!("{} conflict(s)", report.conflicts))
+            ctx.out.minus(&format!("{} conflict(s)", report.conflicts))
         );
     } else {
         println!("(clean merge)");

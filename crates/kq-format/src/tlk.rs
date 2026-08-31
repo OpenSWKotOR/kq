@@ -5,9 +5,10 @@
 
 use std::path::Path;
 
+use kotor_formats::tlk::TlkFile;
+
 use crate::error::Result;
-use crate::gff::cp1252_char;
-use crate::reader::Reader;
+use crate::shared::{cp1252_display, format_error};
 
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -37,41 +38,22 @@ pub fn sniff(data: &[u8]) -> bool {
 }
 
 pub fn read(data: &[u8], path: &Path) -> Result<Tlk> {
-    let mut r = Reader::new(data, path);
-    r.expect_signature("TLK V3.0")?;
-    r.seek(8)?;
-    let language_id = r.u32()?;
-    let count = r.u32()? as usize;
-    let data_offset = r.u32()? as usize;
+    let file =
+        TlkFile::parse(data, &path.to_string_lossy()).map_err(|err| format_error(err, path))?;
 
-    let mut entries = Vec::with_capacity(count);
-    for i in 0..count {
-        r.seek(20 + i * 40)?;
-        let _flags = r.u32()?;
-        let sound = r.fixed_string(16)?;
-        let _volume_variance = r.u32()?;
-        let _pitch_variance = r.u32()?;
-        let offset = r.u32()? as usize;
-        let size = r.u32()? as usize;
-        let _sound_length = r.f32()?;
+    let entries = file
+        .entries()
+        .iter()
+        .map(|entry| Entry {
+            text: cp1252_display(&entry.text),
+            // Resource names are matched case-insensitively, so they are shown
+            // folded, the way every other resref in kq's output is.
+            sound: entry.sound_name().trim().to_ascii_lowercase(),
+        })
+        .collect();
 
-        let text = match r.slice_at(data_offset + offset, size) {
-            Ok(bytes) => decode(bytes),
-            // A truncated string entry should not lose the other 49,999.
-            Err(_) => String::new(),
-        };
-        entries.push(Entry { text, sound });
-    }
     Ok(Tlk {
-        language_id,
+        language_id: file.language_id,
         entries,
     })
-}
-
-fn decode(bytes: &[u8]) -> String {
-    if bytes.is_ascii() {
-        String::from_utf8_lossy(bytes).into_owned()
-    } else {
-        bytes.iter().map(|&b| cp1252_char(b)).collect()
-    }
 }

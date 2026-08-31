@@ -8,8 +8,12 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::error::{FormatError, Result};
-use crate::reader::Reader;
+use kotor_formats::gff::{
+    FieldValue, GffFile as SharedGff, GffParseOptions, GffStruct as SharedStruct,
+};
+
+use crate::error::Result;
+use crate::shared::{cp1252_display, format_error};
 
 /// A GFF value, decoded into something a query language can walk.
 #[derive(Clone, Debug, PartialEq)]
@@ -69,239 +73,69 @@ pub fn sniff(data: &[u8]) -> bool {
     data.len() >= 8 && (&data[4..8] == b"V3.2" || &data[4..8] == b"V3.3")
 }
 
-const MAX_DEPTH: usize = 64;
-
 pub fn read(data: &[u8], path: &Path) -> Result<Gff> {
-    let mut r = Reader::new(data, path);
-    let file_type = String::from_utf8_lossy(r.slice_at(0, 4)?)
-        .trim()
-        .to_string();
-    let version = String::from_utf8_lossy(r.slice_at(4, 4)?)
-        .trim()
-        .to_string();
-    if version != "V3.2" && version != "V3.3" {
-        return Err(FormatError::BadVersion {
-            path: path.to_path_buf(),
-            format: "GFF",
-            version,
-        });
-    }
+    let display = path.display().to_string();
+    // kq only reads, so it accepts more than the games themselves write: V3.3
+    // headers and StrRef fields, both of which appear in Aurora-family tooling.
+    let parsed = SharedGff::parse_with(data, &display, GffParseOptions::lenient())
+        .map_err(|e| format_error(e, path))?;
 
-    r.seek(8)?;
-    let h = Header {
-        struct_offset: r.u32()? as usize,
-        struct_count: r.u32()? as usize,
-        field_offset: r.u32()? as usize,
-        field_count: r.u32()? as usize,
-        label_offset: r.u32()? as usize,
-        label_count: r.u32()? as usize,
-        field_data_offset: r.u32()? as usize,
-        _field_data_bytes: r.u32()? as usize,
-        field_indices_offset: r.u32()? as usize,
-        _field_indices_bytes: r.u32()? as usize,
-        list_indices_offset: r.u32()? as usize,
-        _list_indices_bytes: r.u32()? as usize,
-    };
-
-    let mut labels = Vec::with_capacity(h.label_count);
-    for i in 0..h.label_count {
-        r.seek(h.label_offset + i * 16)?;
-        labels.push(r.fixed_string_cased(16)?);
-    }
-
-    let mut ctx = Ctx { r, h, labels };
-    if ctx.h.struct_count == 0 {
-        return Err(ctx.r.malformed("GFF has no structs"));
-    }
-    let root = read_struct(&mut ctx, 0, 0)?;
     Ok(Gff {
-        file_type,
-        version,
-        root,
+        file_type: parsed.type_name().trim().to_string(),
+        version: String::from_utf8_lossy(&parsed.file_version)
+            .trim()
+            .to_string(),
+        root: project_struct(&parsed.root),
     })
 }
 
-struct Header {
-    struct_offset: usize,
-    struct_count: usize,
-    field_offset: usize,
-    field_count: usize,
-    label_offset: usize,
-    label_count: usize,
-    field_data_offset: usize,
-    _field_data_bytes: usize,
-    field_indices_offset: usize,
-    _field_indices_bytes: usize,
-    list_indices_offset: usize,
-    _list_indices_bytes: usize,
+/// Narrow a shared structure into kq's query-shaped one.
+fn project_struct(node: &SharedStruct) -> Struct {
+    Struct {
+        id: node.type_id,
+        fields: node
+            .fields()
+            .iter()
+            .map(|f| (f.label(), project_value(&f.value)))
+            .collect(),
+    }
 }
 
-struct Ctx<'a> {
-    r: Reader<'a>,
-    h: Header,
-    labels: Vec<String>,
-}
-
-fn read_struct(ctx: &mut Ctx, index: usize, depth: usize) -> Result<Struct> {
-    if depth > MAX_DEPTH {
-        return Err(ctx
-            .r
-            .malformed(format!("struct nesting deeper than {MAX_DEPTH}")));
-    }
-    if index >= ctx.h.struct_count {
-        return Err(ctx
-            .r
-            .malformed(format!("struct index {index} out of range")));
-    }
-    ctx.r.seek(ctx.h.struct_offset + index * 12)?;
-    let id = ctx.r.u32()?;
-    let data_or_offset = ctx.r.u32()? as usize;
-    let field_count = ctx.r.u32()? as usize;
-
-    // One field stores its index directly; more than one stores a byte
-    // offset into the field-index array.
-    let indices: Vec<usize> = if field_count == 1 {
-        vec![data_or_offset]
-    } else {
-        let mut v = Vec::with_capacity(field_count);
-        for i in 0..field_count {
-            ctx.r
-                .seek(ctx.h.field_indices_offset + data_or_offset + i * 4)?;
-            v.push(ctx.r.u32()? as usize);
-        }
-        v
-    };
-
-    let mut fields = Vec::with_capacity(field_count);
-    for fi in indices {
-        fields.push(read_field(ctx, fi, depth)?);
-    }
-    Ok(Struct { id, fields })
-}
-
-fn read_field(ctx: &mut Ctx, index: usize, depth: usize) -> Result<(String, Value)> {
-    if index >= ctx.h.field_count {
-        return Err(ctx.r.malformed(format!("field index {index} out of range")));
-    }
-    ctx.r.seek(ctx.h.field_offset + index * 12)?;
-    let kind = ctx.r.u32()?;
-    let label_index = ctx.r.u32()? as usize;
-    let raw = ctx.r.u32()?;
-
-    let label = ctx
-        .labels
-        .get(label_index)
-        .cloned()
-        .unwrap_or_else(|| format!("_label{label_index}"));
-
-    let at = |ctx: &Ctx, off: u32| ctx.h.field_data_offset + off as usize;
-
-    let value = match kind {
-        0 => Value::UInt(raw as u8 as u64),
-        1 => Value::Int(raw as u8 as i8 as i64),
-        2 => Value::UInt(raw as u16 as u64),
-        3 => Value::Int(raw as u16 as i16 as i64),
-        4 => Value::UInt(raw as u64),
-        5 => Value::Int(raw as i32 as i64),
-        6 => {
-            ctx.r.seek(at(ctx, raw))?;
-            let lo = ctx.r.u32()? as u64;
-            let hi = ctx.r.u32()? as u64;
-            Value::UInt(lo | (hi << 32))
-        }
-        7 => {
-            ctx.r.seek(at(ctx, raw))?;
-            let lo = ctx.r.u32()? as u64;
-            let hi = ctx.r.u32()? as u64;
-            Value::Int((lo | (hi << 32)) as i64)
-        }
-        8 => Value::Float(f32::from_bits(raw) as f64),
-        9 => {
-            ctx.r.seek(at(ctx, raw))?;
-            let lo = ctx.r.u32()? as u64;
-            let hi = ctx.r.u32()? as u64;
-            Value::Float(f64::from_bits(lo | (hi << 32)))
-        }
-        10 => {
-            ctx.r.seek(at(ctx, raw))?;
-            let len = ctx.r.u32()? as usize;
-            let bytes = ctx.r.take(len)?;
-            Value::Str(decode_text(bytes))
-        }
-        11 => {
-            ctx.r.seek(at(ctx, raw))?;
-            let len = ctx.r.u8()? as usize;
-            let bytes = ctx.r.take(len)?;
-            Value::Str(decode_text(bytes))
-        }
-        12 => {
-            ctx.r.seek(at(ctx, raw))?;
-            let _total = ctx.r.u32()?;
-            let strref = ctx.r.u32()? as i32 as i64;
-            let count = ctx.r.u32()? as usize;
-            let mut substrings = BTreeMap::new();
-            for _ in 0..count {
-                let id = ctx.r.u32()?;
-                let len = ctx.r.u32()? as usize;
-                let bytes = ctx.r.take(len)?;
-                substrings.insert(id, decode_text(bytes));
-            }
-            Value::LocString { strref, substrings }
-        }
-        13 => {
-            ctx.r.seek(at(ctx, raw))?;
-            let len = ctx.r.u32()? as usize;
-            Value::Void(ctx.r.take(len)?.to_vec())
-        }
-        14 => Value::Struct(read_struct(ctx, raw as usize, depth + 1)?),
-        15 => {
-            ctx.r.seek(ctx.h.list_indices_offset + raw as usize)?;
-            let count = ctx.r.u32()? as usize;
-            let mut ids = Vec::with_capacity(count);
-            for _ in 0..count {
-                ids.push(ctx.r.u32()? as usize);
-            }
-            let mut items = Vec::with_capacity(count);
-            for id in ids {
-                items.push(read_struct(ctx, id, depth + 1)?);
-            }
-            Value::List(items)
-        }
-        16 => {
-            ctx.r.seek(at(ctx, raw))?;
-            let mut q = [0f32; 4];
-            for slot in &mut q {
-                *slot = ctx.r.f32()?;
-            }
-            Value::Orientation(q)
-        }
-        17 => {
-            ctx.r.seek(at(ctx, raw))?;
-            let mut v = [0f32; 3];
-            for slot in &mut v {
-                *slot = ctx.r.f32()?;
-            }
-            Value::Vector(v)
-        }
-        18 => {
-            ctx.r.seek(at(ctx, raw))?;
-            let _size = ctx.r.u32()?;
-            Value::StrRef(ctx.r.u32()? as i32 as i64)
-        }
-        other => return Err(ctx.r.malformed(format!("unknown GFF field type {other}"))),
-    };
-    Ok((label, value))
-}
-
-/// KotOR strings are Windows-1252, not UTF-8.
+/// Narrow a shared value, collapsing distinctions a query does not need.
 ///
-/// Decoding as UTF-8 would mangle every accented character in the European
-/// releases; Windows-1252 maps every byte to something, so this cannot fail.
-fn decode_text(bytes: &[u8]) -> String {
-    if bytes.is_ascii() {
-        return String::from_utf8_lossy(bytes).into_owned();
+/// The shared type keeps every on-disk width apart because it has to write
+/// them back; kq only displays them, so the integer widths fold into two
+/// signed/unsigned buckets and both string types become [`Value::Str`].
+fn project_value(value: &FieldValue) -> Value {
+    match value {
+        FieldValue::Byte(v) => Value::UInt(*v as u64),
+        FieldValue::Char(v) => Value::Int(*v as i8 as i64),
+        FieldValue::Word(v) => Value::UInt(*v as u64),
+        FieldValue::Short(v) => Value::Int(*v as i64),
+        FieldValue::Dword(v) => Value::UInt(*v as u64),
+        FieldValue::Int(v) => Value::Int(*v as i64),
+        FieldValue::Dword64(raw) => Value::UInt(u64::from_le_bytes(*raw)),
+        FieldValue::Int64(v) => Value::Int(*v),
+        FieldValue::Float(v) => Value::Float(*v as f64),
+        FieldValue::Double(v) => Value::Float(*v),
+        FieldValue::ExoString(s) => Value::Str(cp1252_display(s)),
+        FieldValue::ResRef(s) => Value::Str(cp1252_display(s)),
+        FieldValue::ExoLocString(loc) => Value::LocString {
+            // 0xFFFFFFFF is "no table entry", which reads as -1.
+            strref: loc.strref as i32 as i64,
+            substrings: loc
+                .substrings
+                .iter()
+                .map(|sub| (sub.string_id as u32, cp1252_display(&sub.text)))
+                .collect::<BTreeMap<_, _>>(),
+        },
+        FieldValue::Void(bytes) => Value::Void(bytes.clone()),
+        FieldValue::Struct(node) => Value::Struct(project_struct(node)),
+        FieldValue::List(items) => Value::List(items.iter().map(project_struct).collect()),
+        FieldValue::Orientation(q) => Value::Orientation(*q),
+        FieldValue::Position(v) => Value::Vector(*v),
+        FieldValue::StrRef { value, .. } => Value::StrRef(*value as i64),
     }
-    bytes.iter().map(|&b| cp1252_char(b)).collect()
 }
 
 /// Map one Windows-1252 byte to its Unicode code point.
@@ -319,5 +153,141 @@ pub fn cp1252_char(b: u8) -> char {
         HIGH[(b - 0x80) as usize]
     } else {
         b as char
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kotor_formats::gff::{
+        ExoLocString, FieldValue as Fv, GffField, GffFile as Shared, GffStruct,
+    };
+
+    /// Build bytes through the shared writer, then read them back through kq.
+    fn round_trip(build: impl FnOnce(&mut Shared)) -> Gff {
+        let mut file = Shared::new_file("UTI ", "test.uti");
+        build(&mut file);
+        let bytes = file.to_bytes().unwrap();
+        read(&bytes, Path::new("test.uti")).unwrap()
+    }
+
+    #[test]
+    fn integer_widths_fold_into_signed_and_unsigned() {
+        let gff = round_trip(|f| {
+            f.root.add_field(GffField::new("B", Fv::Byte(200)));
+            f.root.add_field(GffField::new("C", Fv::Char(0xFF)));
+            f.root.add_field(GffField::new("W", Fv::Word(65535)));
+            f.root.add_field(GffField::new("S", Fv::Short(-2)));
+            f.root.add_field(GffField::new("D", Fv::Dword(4000000000)));
+            f.root.add_field(GffField::new("I", Fv::Int(-7)));
+        });
+
+        assert_eq!(gff.root.get("B"), Some(&Value::UInt(200)));
+        // Char is signed in kq's view, so 0xFF reads as -1.
+        assert_eq!(gff.root.get("C"), Some(&Value::Int(-1)));
+        assert_eq!(gff.root.get("W"), Some(&Value::UInt(65535)));
+        assert_eq!(gff.root.get("S"), Some(&Value::Int(-2)));
+        assert_eq!(gff.root.get("D"), Some(&Value::UInt(4000000000)));
+        assert_eq!(gff.root.get("I"), Some(&Value::Int(-7)));
+    }
+
+    #[test]
+    fn both_string_types_collapse_to_str() {
+        let gff = round_trip(|f| {
+            f.root
+                .add_field(GffField::new("Tag", Fv::ExoString("hello".into())));
+            f.root
+                .add_field(GffField::new("Ref", Fv::ResRef("some_ref".into())));
+        });
+
+        assert_eq!(gff.root.get("Tag"), Some(&Value::Str("hello".into())));
+        assert_eq!(gff.root.get("Ref"), Some(&Value::Str("some_ref".into())));
+    }
+
+    #[test]
+    fn high_bytes_render_as_windows_1252() {
+        // 0x92 is stored losslessly as U+0092 and shown as a curly apostrophe.
+        let gff = round_trip(|f| {
+            f.root
+                .add_field(GffField::new("Tag", Fv::ExoString("don\u{92}t".into())));
+        });
+        assert_eq!(
+            gff.root.get("Tag"),
+            Some(&Value::Str("don\u{2019}t".into()))
+        );
+    }
+
+    #[test]
+    fn a_locstring_without_a_table_entry_reads_as_minus_one() {
+        let gff = round_trip(|f| {
+            let mut loc = ExoLocString::default();
+            loc.add_string(0, "A Blade").unwrap();
+            f.root
+                .add_field(GffField::new("Name", Fv::ExoLocString(loc)));
+        });
+
+        match gff.root.get("Name") {
+            Some(Value::LocString { strref, substrings }) => {
+                assert_eq!(*strref, -1);
+                assert_eq!(substrings.get(&0).map(String::as_str), Some("A Blade"));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn nested_structs_and_lists_keep_their_ids_and_order() {
+        let gff = round_trip(|f| {
+            let mut item = GffStruct::new();
+            item.type_id = 9;
+            item.add_field(GffField::new("First", Fv::Int(1)));
+            item.add_field(GffField::new("Second", Fv::Int(2)));
+            f.root
+                .add_field(GffField::new("List", Fv::List(vec![item])));
+        });
+
+        match gff.root.get("List") {
+            Some(Value::List(items)) => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].id, 9);
+                let names: Vec<&str> = items[0].fields.iter().map(|(k, _)| k.as_str()).collect();
+                assert_eq!(names, ["First", "Second"]);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn strref_fields_are_read() {
+        // Type 18 is not something the games write, so the shared crate only
+        // yields it because kq asks for a lenient parse.
+        let gff = round_trip(|f| {
+            f.root.add_field(GffField::new(
+                "Ref",
+                Fv::StrRef {
+                    byte_size: 4,
+                    value: 1234,
+                },
+            ));
+        });
+        assert_eq!(gff.root.get("Ref"), Some(&Value::StrRef(1234)));
+    }
+
+    #[test]
+    fn v3_3_headers_are_accepted_and_reported() {
+        let mut file = Shared::new_file("UTI ", "test.uti");
+        file.root.add_field(GffField::new("Cost", Fv::Dword(1)));
+        let mut bytes = file.to_bytes().unwrap();
+        bytes[4..8].copy_from_slice(b"V3.3");
+
+        let gff = read(&bytes, Path::new("test.uti")).unwrap();
+        assert_eq!(gff.version, "V3.3");
+        assert_eq!(gff.file_type, "UTI");
+    }
+
+    #[test]
+    fn a_malformed_file_names_the_path_it_came_from() {
+        let err = read(b"not a gff file at all!!!", Path::new("bad.uti")).unwrap_err();
+        assert!(format!("{err}").contains("bad.uti"));
     }
 }

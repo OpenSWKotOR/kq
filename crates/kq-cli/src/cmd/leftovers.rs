@@ -86,12 +86,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let index = ctx.index()?;
     let graph = live::build(&index)?;
 
-    let in_scope = unused::candidate_ids(
-        &index,
-        &args.filter,
-        args.no_assets,
-        args.winners_only,
-    )?;
+    let in_scope = unused::candidate_ids(&index, &args.filter, args.no_assets, args.winners_only)?;
     let winners = unused::winner_set(&index, &in_scope);
     let resource_ids = unused::leftover_ids(
         &index,

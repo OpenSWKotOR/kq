@@ -30,8 +30,7 @@ fn strip_bom(data: &[u8]) -> &[u8] {
 }
 
 fn starts_ignore_ascii(data: &[u8], prefix: &[u8]) -> bool {
-    data.len() >= prefix.len()
-        && data[..prefix.len()].eq_ignore_ascii_case(prefix)
+    data.len() >= prefix.len() && data[..prefix.len()].eq_ignore_ascii_case(prefix)
 }
 
 pub fn read(data: &[u8], path: &Path) -> Result<Model> {
@@ -75,10 +74,21 @@ pub fn write(model: &Model) -> String {
     if !model.headlink.is_empty() {
         out.push_str(&format!("headlink {}\n", model.headlink));
     }
-    out.push_str(&format!("\nsetanimationscale {}\n\n", model.animation_scale));
+    out.push_str(&format!(
+        "\nsetanimationscale {}\n\n",
+        model.animation_scale
+    ));
     out.push_str(&format!("beginmodelgeom {}\n", model.name));
-    write_indent(&mut out, 1, &format!("bmin {} {} {}", model.bmin.x, model.bmin.y, model.bmin.z));
-    write_indent(&mut out, 1, &format!("bmax {} {} {}", model.bmax.x, model.bmax.y, model.bmax.z));
+    write_indent(
+        &mut out,
+        1,
+        &format!("bmin {} {} {}", model.bmin.x, model.bmin.y, model.bmin.z),
+    );
+    write_indent(
+        &mut out,
+        1,
+        &format!("bmax {} {} {}", model.bmax.x, model.bmax.y, model.bmax.z),
+    );
     write_indent(&mut out, 1, &format!("radius {}", model.radius));
     out.push('\n');
     if let Some(root) = &model.root {
@@ -181,14 +191,26 @@ fn write_node(out: &mut String, indent: usize, node: &Node) {
 
 fn write_mesh(out: &mut String, indent: usize, mesh: &Mesh) {
     if let Some(b) = &mesh.bmin {
-        write_indent(out, indent, &format!("bmin  {:.7} {:.7} {:.7}", b.x, b.y, b.z));
+        write_indent(
+            out,
+            indent,
+            &format!("bmin  {:.7} {:.7} {:.7}", b.x, b.y, b.z),
+        );
     }
     if let Some(b) = &mesh.bmax {
-        write_indent(out, indent, &format!("bmax  {:.7} {:.7} {:.7}", b.x, b.y, b.z));
+        write_indent(
+            out,
+            indent,
+            &format!("bmax  {:.7} {:.7} {:.7}", b.x, b.y, b.z),
+        );
     }
     write_indent(out, indent, &format!("radius  {:.7}", mesh.radius));
     if let Some(a) = &mesh.average {
-        write_indent(out, indent, &format!("average  {:.7} {:.7} {:.7}", a.x, a.y, a.z));
+        write_indent(
+            out,
+            indent,
+            &format!("average  {:.7} {:.7} {:.7}", a.x, a.y, a.z),
+        );
     }
     write_indent(out, indent, &format!("area {:.7}", mesh.area));
     if let Some(a) = &mesh.ambient {
@@ -197,7 +219,11 @@ fn write_mesh(out: &mut String, indent: usize, mesh: &Mesh) {
     if let Some(d) = &mesh.diffuse {
         write_indent(out, indent, &format!("diffuse {} {} {}", d.x, d.y, d.z));
     }
-    write_indent(out, indent, &format!("transparencyhint {}", mesh.transparencyhint));
+    write_indent(
+        out,
+        indent,
+        &format!("transparencyhint {}", mesh.transparencyhint),
+    );
     if !mesh.bitmap.is_empty() {
         write_indent(out, indent, &format!("bitmap {}", mesh.bitmap));
     }
@@ -207,8 +233,16 @@ fn write_mesh(out: &mut String, indent: usize, mesh: &Mesh) {
     write_indent(out, indent, &format!("render {}", mesh.render));
     write_indent(out, indent, &format!("shadow {}", mesh.shadow));
     write_indent(out, indent, &format!("beaming {}", mesh.beaming));
-    write_indent(out, indent, &format!("backgroundgeometry {}", mesh.backgroundgeometry));
-    write_indent(out, indent, &format!("rotatetexture {}", mesh.rotatetexture));
+    write_indent(
+        out,
+        indent,
+        &format!("backgroundgeometry {}", mesh.backgroundgeometry),
+    );
+    write_indent(
+        out,
+        indent,
+        &format!("rotatetexture {}", mesh.rotatetexture),
+    );
     write_indent(out, indent, &format!("lightmapped {}", mesh.lightmapped));
     if mesh.displacement != 0.0 {
         write_indent(out, indent, &format!("displacement {}", mesh.displacement));
@@ -254,7 +288,11 @@ fn write_mesh(out: &mut String, indent: usize, mesh: &Mesh) {
         }
     }
     if !mesh.constraints.is_empty() {
-        write_indent(out, indent, &format!("constraints {}", mesh.constraints.len()));
+        write_indent(
+            out,
+            indent,
+            &format!("constraints {}", mesh.constraints.len()),
+        );
         for c in &mesh.constraints {
             write_indent(out, indent + 1, &format!("{c}"));
         }
@@ -300,21 +338,37 @@ fn write_mesh(out: &mut String, indent: usize, mesh: &Mesh) {
 
 fn write_light(out: &mut String, indent: usize, light: &Light) {
     write_indent(out, indent, &format!("flareradius {}", light.flareradius));
-    write_indent(out, indent, &format!("lightpriority {}", light.lightpriority));
+    write_indent(
+        out,
+        indent,
+        &format!("lightpriority {}", light.lightpriority),
+    );
     write_indent(out, indent, &format!("ambientonly {}", light.ambientonly));
     write_indent(out, indent, &format!("ndynamictype {}", light.ndynamictype));
-    write_indent(out, indent, &format!("affectdynamic {}", light.affectdynamic));
+    write_indent(
+        out,
+        indent,
+        &format!("affectdynamic {}", light.affectdynamic),
+    );
     write_indent(out, indent, &format!("shadow {}", light.shadow));
     write_indent(out, indent, &format!("flare {}", light.flare));
     write_indent(out, indent, &format!("fadinglight {}", light.fadinglight));
     if !light.flaresizes.is_empty() {
-        write_indent(out, indent, &format!("flaresizes {}", light.flaresizes.len()));
+        write_indent(
+            out,
+            indent,
+            &format!("flaresizes {}", light.flaresizes.len()),
+        );
         for v in &light.flaresizes {
             write_indent(out, indent + 1, &format!("{v}"));
         }
     }
     if !light.flarepositions.is_empty() {
-        write_indent(out, indent, &format!("flarepositions {}", light.flarepositions.len()));
+        write_indent(
+            out,
+            indent,
+            &format!("flarepositions {}", light.flarepositions.len()),
+        );
         for v in &light.flarepositions {
             write_indent(out, indent + 1, &format!("{v}"));
         }
@@ -330,7 +384,11 @@ fn write_light(out: &mut String, indent: usize, light: &Light) {
         }
     }
     if !light.texturenames.is_empty() {
-        write_indent(out, indent, &format!("texturenames {}", light.texturenames.len()));
+        write_indent(
+            out,
+            indent,
+            &format!("texturenames {}", light.texturenames.len()),
+        );
         for t in &light.texturenames {
             write_indent(out, indent + 1, t);
         }
@@ -618,7 +676,10 @@ impl Parser {
     }
 
     fn open_node(&mut self, tokens: &[String]) {
-        let mut kind = tokens.get(1).map(|s| NodeKind::parse(s)).unwrap_or_default();
+        let mut kind = tokens
+            .get(1)
+            .map(|s| NodeKind::parse(s))
+            .unwrap_or_default();
         let mut name = tokens.get(2).cloned().unwrap_or_default();
         if name.starts_with("2081__") {
             kind = NodeKind::Lightsaber;
@@ -717,7 +778,8 @@ impl Parser {
             "weights" => self.begin_table(TableKind::Weights, int_tok(tokens, 1) as usize),
             "constraints" => self.begin_table(TableKind::Constraints, int_tok(tokens, 1) as usize),
             "aabb" => {
-                if tokens.len() > 1 && tokens[1].chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                if tokens.len() > 1 && tokens[1].chars().next().is_some_and(|c| c.is_ascii_digit())
+                {
                     self.begin_table(TableKind::Aabb, int_tok(tokens, 1) as usize);
                 }
             }
@@ -728,7 +790,9 @@ impl Parser {
             "flarecolorshifts" => {
                 self.begin_table(TableKind::FlareColorShifts, int_tok(tokens, 1) as usize)
             }
-            "texturenames" => self.begin_table(TableKind::TextureNames, int_tok(tokens, 1) as usize),
+            "texturenames" => {
+                self.begin_table(TableKind::TextureNames, int_tok(tokens, 1) as usize)
+            }
             "bitmap" => {
                 if let Some(m) = self.ensure_mesh() {
                     m.bitmap = tokens.get(1).cloned().unwrap_or_default();
@@ -848,8 +912,10 @@ impl Parser {
             }
             "lightpriority" => {
                 if let Some(n) = self.node_mut() {
-                    n.node.light.get_or_insert_with(Light::default).lightpriority =
-                        int_tok(tokens, 1);
+                    n.node
+                        .light
+                        .get_or_insert_with(Light::default)
+                        .lightpriority = int_tok(tokens, 1);
                 }
             }
             "ambientonly" => {
@@ -866,8 +932,10 @@ impl Parser {
             }
             "affectdynamic" => {
                 if let Some(n) = self.node_mut() {
-                    n.node.light.get_or_insert_with(Light::default).affectdynamic =
-                        int_tok(tokens, 1);
+                    n.node
+                        .light
+                        .get_or_insert_with(Light::default)
+                        .affectdynamic = int_tok(tokens, 1);
                 }
             }
             "flare" => {
@@ -1110,7 +1178,10 @@ fn build_tree(pending: Vec<PendingNode>) -> Option<Node> {
     for name in &order {
         match parents.get(name).and_then(|p| p.as_ref()) {
             Some(parent) if by_name.contains_key(parent) => {
-                children.entry(parent.clone()).or_default().push(name.clone());
+                children
+                    .entry(parent.clone())
+                    .or_default()
+                    .push(name.clone());
             }
             _ => roots.push(name.clone()),
         }
