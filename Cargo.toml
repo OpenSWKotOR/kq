@@ -20,9 +20,11 @@ clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 
 kotor-ncs-isa = { git = "https://github.com/arrenkaetris/kotor-formats", tag = "v0.1.0" }
 kotor-formats = { git = "https://github.com/arrenkaetris/kotor-formats", tag = "v0.1.0" }
+kotor-diff = { git = "https://github.com/arrenkaetris/kotor-formats", tag = "v0.1.0", features = ["json"] }
 
-# To work against a local kotor-formats checkout instead of the pinned tag,
-# uncomment:
-# [patch."https://github.com/arrenkaetris/kotor-formats"]
-# kotor-ncs-isa = { path = "../kotor-formats/crates/kotor-ncs-isa" }
-# kotor-formats = { path = "../kotor-formats/crates/kotor-formats" }
+# Pointed at the local kotor-formats checkout while kotor-diff is new: the
+# pinned tag does not carry that crate yet. Re-comment once a tag includes it.
+[patch."https://github.com/arrenkaetris/kotor-formats"]
+kotor-ncs-isa = { path = "../kotor-formats/crates/kotor-ncs-isa" }
+kotor-formats = { path = "../kotor-formats/crates/kotor-formats" }
+kotor-diff = { path = "../kotor-formats/crates/kotor-diff" }
