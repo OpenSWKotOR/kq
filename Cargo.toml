@@ -18,12 +18,12 @@ memmap2 = "0.9"
 rayon = "1"
 clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 
-# Pinned to the branch that adds kotor-diff, because no tag carries that crate
-# yet. Re-pin all three to a tag once arrenkaetris/kotor-formats#1 is merged and
-# released — a branch moves, so this is not reproducible as it stands.
-kotor-ncs-isa = { git = "https://github.com/arrenkaetris/kotor-formats", branch = "feat/kotor-diff" }
-kotor-formats = { git = "https://github.com/arrenkaetris/kotor-formats", branch = "feat/kotor-diff" }
-kotor-diff = { git = "https://github.com/arrenkaetris/kotor-formats", branch = "feat/kotor-diff", features = ["json"] }
+# Pinned to the commit that adds kotor-diff, because no tag carries that crate
+# yet. A commit does not move, so this builds the same thing everywhere; swap
+# all three for a tag once arrenkaetris/kotor-formats#1 is merged and released.
+kotor-ncs-isa = { git = "https://github.com/arrenkaetris/kotor-formats", rev = "999a0b52b5867ab41b2cbb8c1b1a40bcaf695cb0" }
+kotor-formats = { git = "https://github.com/arrenkaetris/kotor-formats", rev = "999a0b52b5867ab41b2cbb8c1b1a40bcaf695cb0" }
+kotor-diff = { git = "https://github.com/arrenkaetris/kotor-formats", rev = "999a0b52b5867ab41b2cbb8c1b1a40bcaf695cb0", features = ["json"] }
 
 # To work against a local kotor-formats checkout instead, uncomment:
 # [patch."https://github.com/arrenkaetris/kotor-formats"]

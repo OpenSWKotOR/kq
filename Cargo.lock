@@ -286,7 +286,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "kotor-diff"
 version = "0.1.0"
-source = "git+https://github.com/arrenkaetris/kotor-formats?branch=feat/kotor-diff#999a0b52b5867ab41b2cbb8c1b1a40bcaf695cb0"
+source = "git+https://github.com/arrenkaetris/kotor-formats?rev=999a0b52b5867ab41b2cbb8c1b1a40bcaf695cb0#999a0b52b5867ab41b2cbb8c1b1a40bcaf695cb0"
 dependencies = [
  "kotor-formats",
  "serde",
@@ -296,12 +296,12 @@ dependencies = [
 [[package]]
 name = "kotor-formats"
 version = "0.1.0"
-source = "git+https://github.com/arrenkaetris/kotor-formats?branch=feat/kotor-diff#999a0b52b5867ab41b2cbb8c1b1a40bcaf695cb0"
+source = "git+https://github.com/arrenkaetris/kotor-formats?rev=999a0b52b5867ab41b2cbb8c1b1a40bcaf695cb0#999a0b52b5867ab41b2cbb8c1b1a40bcaf695cb0"
 
 [[package]]
 name = "kotor-ncs-isa"
 version = "0.1.0"
-source = "git+https://github.com/arrenkaetris/kotor-formats?branch=feat/kotor-diff#999a0b52b5867ab41b2cbb8c1b1a40bcaf695cb0"
+source = "git+https://github.com/arrenkaetris/kotor-formats?rev=999a0b52b5867ab41b2cbb8c1b1a40bcaf695cb0#999a0b52b5867ab41b2cbb8c1b1a40bcaf695cb0"
 
 [[package]]
 name = "kq-cli"
