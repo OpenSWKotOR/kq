@@ -5,7 +5,7 @@
 #   wget -qO- https://github.com/holowan-biolabs/kq/releases/latest/download/install.sh | sh
 #
 # Optional:
-#   KQ_VERSION=v0.3.1     pin a release tag (default: latest)
+#   KQ_VERSION=v0.1.0     pin a release tag (default: latest)
 #   KQ_INSTALL_DIR=DIR    where to put the binary (default: ~/.local/bin)
 #   KQ_REPO=owner/name    GitHub repo (default: holowan-biolabs/kq)
 set -eu

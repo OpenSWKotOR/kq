@@ -3,7 +3,7 @@
 #   powershell -ExecutionPolicy ByPass -c "irm https://github.com/holowan-biolabs/kq/releases/latest/download/install.ps1 | iex"
 #
 # Optional env:
-#   KQ_VERSION      release tag, e.g. v0.3.1 (default: latest)
+#   KQ_VERSION      release tag, e.g. v0.1.0 (default: latest)
 #   KQ_INSTALL_DIR  install directory (default: $env:USERPROFILE\.local\bin)
 #   KQ_REPO         GitHub repo (default: holowan-biolabs/kq)
 
