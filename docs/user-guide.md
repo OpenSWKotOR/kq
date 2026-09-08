@@ -23,20 +23,20 @@ You do not need to know Rust. You do need a KotOR install (or a single
 macOS / Linux:
 
 ```bash
-curl -LsSf https://github.com/arrenkaetris/kq/releases/latest/download/install.sh | sh
+curl -LsSf https://github.com/holowan-biolabs/kq/releases/latest/download/install.sh | sh
 ```
 
 Windows:
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/arrenkaetris/kq/releases/latest/download/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/holowan-biolabs/kq/releases/latest/download/install.ps1 | iex"
 ```
 
 `wget -qO- …/install.sh | sh` works if you do not have `curl`. Linux x86_64
 downloads a binary; other platforms use `cargo` when it is installed.
 
 ```bash
-cargo install --git https://github.com/arrenkaetris/kq --locked
+cargo install --git https://github.com/holowan-biolabs/kq --locked
 ```
 
 From a checkout: `cargo build --release`. Cargo/source builds need

@@ -10,7 +10,7 @@ Query a KotOR install **in place**. Do not extract archives.
 ## Resolve the binary and the target
 
 1. Binary: `kq` on `PATH`, else install with
-   `curl -LsSf https://github.com/arrenkaetris/kq/releases/latest/download/install.sh | sh`
+   `curl -LsSf https://github.com/holowan-biolabs/kq/releases/latest/download/install.sh | sh`
    or use `./target/release/kq` / `./target/debug/kq`.
 2. Target, in order: `-i PATH`, `$KQ_INSTALL`, walk-up for `chitin.key`.
 3. If neither exists, ask for an install path. Do not invent one.

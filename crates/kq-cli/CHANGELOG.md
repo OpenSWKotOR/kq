@@ -1,16 +1,16 @@
 # Changelog
 
-## [0.5.0](https://github.com/arrenkaetris/kq/compare/v0.4.0...v0.5.0) (2026-08-31)
+## [0.5.0](https://github.com/holowan-biolabs/kq/compare/v0.4.0...v0.5.0) (2026-08-31)
 
 
 ### Features
 
-* read formats through the shared kotor-formats crate, and generate changes.ini ([#1](https://github.com/arrenkaetris/kq/issues/1)) ([6e65f67](https://github.com/arrenkaetris/kq/commit/6e65f67bfdee992e9c78f0687b32a46a215b43e4))
+* read formats through the shared kotor-formats crate, and generate changes.ini ([#1](https://github.com/holowan-biolabs/kq/issues/1)) ([6e65f67](https://github.com/holowan-biolabs/kq/commit/6e65f67bfdee992e9c78f0687b32a46a215b43e4))
 
 
 ### Bug Fixes
 
-* make release-please able to run at all ([#2](https://github.com/arrenkaetris/kq/issues/2)) ([8cdf88d](https://github.com/arrenkaetris/kq/commit/8cdf88d930a8f9bf8754f182a6394e70f1f82729))
+* make release-please able to run at all ([#2](https://github.com/holowan-biolabs/kq/issues/2)) ([8cdf88d](https://github.com/holowan-biolabs/kq/commit/8cdf88d930a8f9bf8754f182a6394e70f1f82729))
 
 ## 0.3.5
 

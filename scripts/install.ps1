@@ -1,15 +1,15 @@
 # kq standalone installer (Windows).
 #
-#   powershell -ExecutionPolicy ByPass -c "irm https://github.com/arrenkaetris/kq/releases/latest/download/install.ps1 | iex"
+#   powershell -ExecutionPolicy ByPass -c "irm https://github.com/holowan-biolabs/kq/releases/latest/download/install.ps1 | iex"
 #
 # Optional env:
 #   KQ_VERSION      release tag, e.g. v0.3.1 (default: latest)
 #   KQ_INSTALL_DIR  install directory (default: $env:USERPROFILE\.local\bin)
-#   KQ_REPO         GitHub repo (default: arrenkaetris/kq)
+#   KQ_REPO         GitHub repo (default: holowan-biolabs/kq)
 
 $ErrorActionPreference = "Stop"
 
-$Repo = if ($env:KQ_REPO) { $env:KQ_REPO } else { "arrenkaetris/kq" }
+$Repo = if ($env:KQ_REPO) { $env:KQ_REPO } else { "holowan-biolabs/kq" }
 $Version = if ($env:KQ_VERSION) { $env:KQ_VERSION } else { "latest" }
 $BinDir = if ($env:KQ_INSTALL_DIR) { $env:KQ_INSTALL_DIR } else { Join-Path $env:USERPROFILE ".local\bin" }
 

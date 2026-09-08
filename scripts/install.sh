@@ -1,16 +1,16 @@
 #!/bin/sh
 # kq standalone installer (macOS / Linux).
 #
-#   curl -LsSf https://github.com/arrenkaetris/kq/releases/latest/download/install.sh | sh
-#   wget -qO- https://github.com/arrenkaetris/kq/releases/latest/download/install.sh | sh
+#   curl -LsSf https://github.com/holowan-biolabs/kq/releases/latest/download/install.sh | sh
+#   wget -qO- https://github.com/holowan-biolabs/kq/releases/latest/download/install.sh | sh
 #
 # Optional:
 #   KQ_VERSION=v0.3.1     pin a release tag (default: latest)
 #   KQ_INSTALL_DIR=DIR    where to put the binary (default: ~/.local/bin)
-#   KQ_REPO=owner/name    GitHub repo (default: arrenkaetris/kq)
+#   KQ_REPO=owner/name    GitHub repo (default: holowan-biolabs/kq)
 set -eu
 
-REPO="${KQ_REPO:-arrenkaetris/kq}"
+REPO="${KQ_REPO:-holowan-biolabs/kq}"
 VERSION="${KQ_VERSION:-latest}"
 BIN_DIR="${KQ_INSTALL_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}"
 

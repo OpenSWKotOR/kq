@@ -50,19 +50,19 @@ Toolset. It is the `rg`/`jq` of a KotOR install.
 macOS and Linux:
 
 ```bash
-curl -LsSf https://github.com/arrenkaetris/kq/releases/latest/download/install.sh | sh
+curl -LsSf https://github.com/holowan-biolabs/kq/releases/latest/download/install.sh | sh
 ```
 
 If you do not have `curl`:
 
 ```bash
-wget -qO- https://github.com/arrenkaetris/kq/releases/latest/download/install.sh | sh
+wget -qO- https://github.com/holowan-biolabs/kq/releases/latest/download/install.sh | sh
 ```
 
 Windows (PowerShell):
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/arrenkaetris/kq/releases/latest/download/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/holowan-biolabs/kq/releases/latest/download/install.ps1 | iex"
 ```
 
 Pin a release with `KQ_VERSION=v0.3.1` (or put the tag in the download URL).
@@ -74,7 +74,7 @@ from source when `cargo` is on `PATH` ([Rust 1.82+](https://rustup.rs/)).
 ### Cargo
 
 ```bash
-cargo install --git https://github.com/arrenkaetris/kq --locked
+cargo install --git https://github.com/holowan-biolabs/kq --locked
 ```
 
 From a checkout: `cargo build --release` → `target/release/kq`.
