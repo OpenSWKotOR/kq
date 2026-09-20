@@ -153,7 +153,7 @@ impl LocalStack {
     pub fn cpdownsp(&mut self, off: i32, size: i32) -> Result<CpDownTarget, StackError> {
         let loc = stack_offset_to_pos(off);
         let copy = stack_size_to_pos(size);
-        if loc > self.entries.len() {
+        if loc >= self.entries.len() {
             return Ok(CpDownTarget::Return { loc });
         }
         if loc == 0 || copy == 0 || copy > loc {
@@ -355,8 +355,9 @@ mod tests {
     #[test]
     fn cpdownsp_assigns_or_return() {
         let mut s = LocalStack::new();
+        s.push(Entry::Const(Const::Int(0))); // filler below dest (pos 3 once stack is full)
         let dest = s.push_var(int_var());
-        s.push(Entry::Const(Const::Int(7)));
+        s.push(Entry::Const(Const::Int(7))); // top; dest stays at pos 2, len 3 > loc 2
         match s.cpdownsp(-8, 4).unwrap() {
             CpDownTarget::Assign { pos, count } => {
                 assert_eq!(pos, 2);
@@ -370,6 +371,19 @@ mod tests {
         s.push(Entry::Const(Const::Int(1)));
         match s.cpdownsp(-12, 4).unwrap() {
             CpDownTarget::Return { loc } => assert_eq!(loc, 3),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn cpdownsp_loc_eq_len_is_return() {
+        let n = 2usize;
+        let mut s = LocalStack::new();
+        s.push(Entry::Const(Const::Int(1)));
+        s.push(Entry::Const(Const::Int(2)));
+        assert_eq!(s.len(), n);
+        match s.cpdownsp(-(n as i32 * 4) as i32, 4).unwrap() {
+            CpDownTarget::Return { loc } => assert_eq!(loc, n),
             other => panic!("{other:?}"),
         }
     }
