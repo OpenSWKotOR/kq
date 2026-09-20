@@ -1,9 +1,9 @@
-//! Pattern tests for the decompiler pipeline. Task 3: split section.
+//! Pattern tests for the decompiler pipeline.
 
 mod common;
 
 use common::{asm, AsmArg::*};
-use kq_ncs::{split, SplitError, SubKind};
+use kq_ncs::{analyze, split, SplitError, SubKind};
 
 #[test]
 fn split_main_with_globals() {
@@ -66,4 +66,43 @@ fn split_jsr_target_must_be_a_sub_start() {
         Err(SplitError::JsrTargetNotSub { target: 99, .. }) => {}
         other => panic!("expected JsrTargetNotSub, got {other:?}"),
     }
+}
+
+#[test]
+fn cfg_starting_conditional_dead_epilogue() {
+    let ins = asm(&[
+        ("RSADDI", vec![]),
+        ("JSR", vec![JumpAbs(23)]),
+        ("RETN", vec![]),
+        ("CONSTI", vec![Int(0)]),
+        ("CPDOWNSP", vec![Int(-8), Int(4)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("JMP", vec![JumpAbs(55)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("RETN", vec![]),
+    ]);
+    let p = split(&ins).unwrap();
+    let cfg = analyze(&ins, &p.main, &[]);
+    let dead_movsp = ins.iter().position(|i| i.offset == 49).unwrap();
+    assert!(cfg.dead[dead_movsp]);
+}
+
+#[test]
+fn cfg_log_or_extra_jz_from_mand04_shape() {
+    let ins = asm(&[
+        ("JSR", vec![JumpAbs(21)]),
+        ("RETN", vec![]),
+        ("CONSTI", vec![Int(0)]),
+        ("CPTOPSP", vec![Int(-4), Int(4)]),
+        ("JZ", vec![JumpAbs(55)]),
+        ("CPTOPSP", vec![Int(-4), Int(4)]),
+        ("JZ", vec![JumpAbs(61)]),
+        ("CONSTI", vec![Int(1)]),
+        ("LOGORII", vec![]),
+        ("RETN", vec![]),
+    ]);
+    let p = split(&ins).unwrap();
+    let cfg = analyze(&ins, &p.main, &p.deferred);
+    let extra_jz_idx = ins.iter().position(|i| i.offset == 49).unwrap();
+    assert!(cfg.log_or_extra_jz.contains(&extra_jz_idx));
 }

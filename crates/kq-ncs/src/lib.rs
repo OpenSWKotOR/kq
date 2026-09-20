@@ -2,10 +2,12 @@
 
 mod actions;
 mod actions_gen;
+mod cfg;
 mod fallback;
 mod split;
 mod ty;
 
+pub use cfg::{analyze, BlockEnd, Cfg};
 pub use kq_index::Game;
 pub use split::{split, DeferredRegion, SplitError, SplitProgram, SubKind, SubRange};
 
