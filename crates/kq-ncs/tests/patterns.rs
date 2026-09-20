@@ -3,7 +3,114 @@
 mod common;
 
 use common::{asm, AsmArg::*};
-use kq_ncs::{analyze, split, SplitError, SubKind};
+use kq_format::ncs::Ncs;
+use kq_ncs::{analyze, decompile, split, Game, SplitError, SubKind};
+
+fn asm_to_ncs(lines: &[(&str, Vec<common::AsmArg>)]) -> Ncs {
+    let instructions = asm(lines);
+    let declared_size = instructions
+        .last()
+        .map(|last| last.offset + 2)
+        .unwrap_or(13);
+    Ncs {
+        declared_size,
+        instructions,
+    }
+}
+
+#[test]
+fn golden_false_starting_conditional() {
+    let ncs = asm_to_ncs(&[
+        ("RSADDI", vec![]),
+        ("JSR", vec![JumpAbs(23)]),
+        ("RETN", vec![]),
+        ("CONSTI", vec![Int(0)]),
+        ("CPDOWNSP", vec![Int(-8), Int(4)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("JMP", vec![JumpAbs(55)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("RETN", vec![]),
+    ]);
+    let d = decompile(&ncs, Game::K1);
+    assert_eq!(
+        d.source.trim(),
+        "int StartingConditional() {\n\treturn 0;\n}"
+    );
+}
+
+#[test]
+fn golden_k_pdan_juhani11_if() {
+    let ncs = asm_to_ncs(&[
+        ("JSR", vec![JumpAbs(21)]),
+        ("RETN", vec![]),
+        ("CONSTS", vec![Str("DAN_JEDI_PLOT".into())]),
+        ("ACTION", vec![Int(580), Int(1)]),
+        ("CONSTI", vec![Int(3)]),
+        ("EQUALII", vec![]),
+        ("JZ", vec![JumpAbs(91)]),
+        ("CONSTI", vec![Int(4)]),
+        ("CONSTS", vec![Str("DAN_JEDI_PLOT".into())]),
+        ("ACTION", vec![Int(581), Int(2)]),
+        ("JMP", vec![JumpAbs(91)]),
+        ("CONSTI", vec![Int(2)]),
+        ("CONSTS", vec![Str("DAN_JUHANI_PLOT".into())]),
+        ("ACTION", vec![Int(581), Int(2)]),
+        ("RETN", vec![]),
+    ]);
+    let d = decompile(&ncs, Game::K1);
+    assert_eq!(
+        d.source.trim(),
+        "void main() {\n\tif (GetGlobalNumber(\"DAN_JEDI_PLOT\") == 3) {\n\t\tSetGlobalNumber(\"DAN_JEDI_PLOT\", 4);\n\t}\n\tSetGlobalNumber(\"DAN_JUHANI_PLOT\", 2);\n}"
+    );
+}
+
+#[test]
+fn golden_hjuh_h02_and_guard() {
+    let ncs = asm_to_ncs(&[
+        ("RSADDI", vec![]),
+        ("JSR", vec![JumpAbs(23)]),
+        ("RETN", vec![]),
+        ("RSADDI", vec![]),
+        ("CONSTS", vec![Str("G_JUHANIH_STATE".into())]),
+        ("ACTION", vec![Int(580), Int(1)]),
+        ("CONSTI", vec![Int(1)]),
+        ("EQUALII", vec![]),
+        ("CPTOPSP", vec![Int(-4), Int(4)]),
+        ("JZ", vec![JumpAbs(100)]),
+        ("ACTION", vec![Int(548), Int(0)]),
+        ("ACTION", vec![Int(166), Int(1)]),
+        ("CONSTS", vec![Str("T_LEVH".into())]),
+        ("ACTION", vec![Int(580), Int(1)]),
+        ("GTII", vec![]),
+        ("LOGANDII", vec![]),
+        ("CPDOWNSP", vec![Int(-8), Int(4)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("CPTOPSP", vec![Int(-4), Int(4)]),
+        ("JZ", vec![JumpAbs(202)]),
+        ("CONSTI", vec![Int(2)]),
+        ("CONSTS", vec![Str("G_JUHANIH_STATE".into())]),
+        ("ACTION", vec![Int(581), Int(2)]),
+        ("CONSTS", vec![Str("T_LEVH".into())]),
+        ("ACTION", vec![Int(580), Int(1)]),
+        ("CONSTI", vec![Int(1)]),
+        ("ADDII", vec![]),
+        ("CONSTS", vec![Str("T_LEVH".into())]),
+        ("ACTION", vec![Int(581), Int(2)]),
+        ("JMP", vec![JumpAbs(202)]),
+        ("CPTOPSP", vec![Int(-4), Int(4)]),
+        ("CPDOWNSP", vec![Int(-12), Int(4)]),
+        ("MOVSP", vec![Int(-8)]),
+        ("JMP", vec![JumpAbs(242)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("RETN", vec![]),
+    ]);
+    let d = decompile(&ncs, Game::K1);
+    assert_eq!(
+        d.source.trim(),
+        "int StartingConditional() {\n\tint int1 = GetGlobalNumber(\"G_JUHANIH_STATE\") == 1 && GetHitDice(GetFirstPC()) > GetGlobalNumber(\"T_LEVH\");\n\tif (int1) {\n\t\tSetGlobalNumber(\"G_JUHANIH_STATE\", 2);\n\t\tSetGlobalNumber(\"T_LEVH\", GetGlobalNumber(\"T_LEVH\") + 1);\n\t}\n\treturn int1;\n}"
+    );
+}
 
 #[test]
 fn split_main_with_globals() {
