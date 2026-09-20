@@ -387,7 +387,7 @@ fn switch_with_default() {
         "\
 void main() {
 	int int1 = 0;
-	switch (int1) {
+	switch(int1) {
 		case 1:
 			PrintInteger(1);
 			break;
