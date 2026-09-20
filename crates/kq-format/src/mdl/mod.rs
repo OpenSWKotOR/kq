@@ -30,6 +30,55 @@ pub fn sniff_binary(data: &[u8]) -> bool {
     binary::sniff(data)
 }
 
+/// Collect texture / supermodel name strings without decoding meshes or reading MDX.
+pub fn texture_refs(bytes: &[u8]) -> Vec<String> {
+    if sniff_ascii(bytes) {
+        texture_refs_ascii(bytes)
+    } else if sniff_binary(bytes) {
+        texture_refs_binary(bytes)
+    } else {
+        Vec::new()
+    }
+}
+
+fn texture_refs_ascii(bytes: &[u8]) -> Vec<String> {
+    let text = String::from_utf8_lossy(bytes);
+    let mut out = Vec::new();
+    for (key, idx) in [
+        ("bitmap ", 7usize),
+        ("lightmap ", 9),
+        ("setsupermodel ", 14),
+        ("texture0 ", 9),
+        ("texture1 ", 9),
+        ("texture2 ", 9),
+    ] {
+        for line in text.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix(key) {
+                // setsupermodel <model> <supermodel> — take the last token, not the model name.
+                let name = if key == "setsupermodel " {
+                    rest.split_whitespace().last().unwrap_or("")
+                } else {
+                    rest.split_whitespace().next().unwrap_or("")
+                };
+                if !name.is_empty() && !name.eq_ignore_ascii_case("null") {
+                    out.push(name.to_ascii_lowercase());
+                }
+            }
+        }
+        let _ = idx;
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn texture_refs_binary(bytes: &[u8]) -> Vec<String> {
+    // binary::read(mdx=None) still allocates vertex/face arrays (up to MAX_VERTS).
+    // Walk node headers and trimesh bitmap/lightmap fields only.
+    binary::texture_refs(bytes)
+}
+
 /// Read ASCII or binary MDL. Binary meshes that store verts in MDX will
 /// record a warning unless [`read_with_mdx`] is used.
 pub fn read(data: &[u8], path: &Path) -> Result<Model> {
@@ -185,5 +234,23 @@ donemodel test
         let json = write_json(&first).unwrap();
         let second = read_json(json.as_bytes(), path).unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn texture_refs_ascii_reads_bitmap_without_mdx() {
+        let ascii = br#"
+newmodel test
+setsupermodel test NULL
+beginmodelgeom test
+  node trimesh mesh
+  {
+    bitmap cm_baremetal
+    lightmap m01aa_lm
+  }
+endmodelgeom test
+"#;
+        let refs = texture_refs(ascii);
+        assert!(refs.iter().any(|s| s == "cm_baremetal"));
+        assert!(refs.iter().any(|s| s == "m01aa_lm"));
     }
 }
