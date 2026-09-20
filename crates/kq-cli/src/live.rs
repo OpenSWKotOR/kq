@@ -218,7 +218,7 @@ pub struct LiveGraph {
     pub parent: HashMap<u32, u32>,
     /// ResRef / module-root tokens each used resource mentions.
     pub edges: HashMap<u32, HashSet<String>>,
-    /// ResRef-shaped tokens with no catalog / module-root match.
+    /// ResRef-shaped tokens with no in-scope / module-root match.
     pub missing: HashMap<u32, HashSet<String>>,
     /// Module-root → scoped entry resource ids (ifo/are/git/pth).
     pub module_entries: HashMap<String, Vec<u32>>,
@@ -276,9 +276,13 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
         let mut mentions = HashSet::new();
         let mut strrefs = HashSet::new();
         let mut missing = HashSet::new();
+        let scope = resource_scope(index, r);
         collect(
             &decoded,
-            &catalog,
+            index,
+            &winners_map,
+            &module_entries,
+            &scope,
             &module_roots,
             &r.resref,
             r.restype.extension(),
@@ -753,7 +757,10 @@ fn add_are_layout_edges(
 
 fn collect(
     decoded: &Decoded,
-    known: &HashSet<String>,
+    index: &Index,
+    winners: &HashMap<(Scope, String, ResType), u32>,
+    module_entries: &HashMap<String, Vec<u32>>,
+    scope: &Scope,
     module_roots: &HashSet<String>,
     self_ref: &str,
     self_ext: Option<&str>,
@@ -766,7 +773,10 @@ fn collect(
         Decoded::Value(v) => walk_json(
             v,
             &mut Walk {
-                known,
+                index,
+                winners,
+                module_entries,
+                scope,
                 module_roots,
                 self_ref,
                 self_ext,
@@ -779,7 +789,10 @@ fn collect(
         ),
         Decoded::Text(s) => take_tokens(
             s,
-            known,
+            index,
+            winners,
+            module_entries,
+            scope,
             module_roots,
             self_ref,
             self_ext,
@@ -791,7 +804,10 @@ fn collect(
 }
 
 struct Walk<'a> {
-    known: &'a HashSet<String>,
+    index: &'a Index,
+    winners: &'a HashMap<(Scope, String, ResType), u32>,
+    module_entries: &'a HashMap<String, Vec<u32>>,
+    scope: &'a Scope,
     module_roots: &'a HashSet<String>,
     self_ref: &'a str,
     self_ext: Option<&'a str>,
@@ -806,7 +822,10 @@ fn walk_json(v: &J, w: &mut Walk<'_>, key: Option<&str>) {
         J::String(s) => {
             take_tokens(
                 s,
-                w.known,
+                w.index,
+                w.winners,
+                w.module_entries,
+                w.scope,
                 w.module_roots,
                 w.self_ref,
                 w.self_ext,
@@ -881,7 +900,10 @@ fn parse_strref(s: &str) -> Option<i64> {
 
 fn take_tokens(
     s: &str,
-    known: &HashSet<String>,
+    index: &Index,
+    winners: &HashMap<(Scope, String, ResType), u32>,
+    module_entries: &HashMap<String, Vec<u32>>,
+    scope: &Scope,
     module_roots: &HashSet<String>,
     self_ref: &str,
     self_ext: Option<&str>,
@@ -898,7 +920,10 @@ fn take_tokens(
         } else if let Some(st) = start.take() {
             consider_token(
                 &lower[st..i],
-                known,
+                index,
+                winners,
+                module_entries,
+                scope,
                 module_roots,
                 self_ref,
                 self_ext,
@@ -910,7 +935,10 @@ fn take_tokens(
     if let Some(st) = start {
         consider_token(
             &lower[st..],
-            known,
+            index,
+            winners,
+            module_entries,
+            scope,
             module_roots,
             self_ref,
             self_ext,
@@ -922,7 +950,10 @@ fn take_tokens(
 
 fn consider_token(
     tok: &str,
-    known: &HashSet<String>,
+    index: &Index,
+    winners: &HashMap<(Scope, String, ResType), u32>,
+    module_entries: &HashMap<String, Vec<u32>>,
+    scope: &Scope,
     module_roots: &HashSet<String>,
     self_resref: &str,
     self_ext: Option<&str>,
@@ -953,13 +984,16 @@ fn consider_token(
     if ident_len == 0 || ident_len > 16 {
         return;
     }
-    if known.contains(tok) || module_roots.contains(tok) {
+    if !resolve_in_scope(index, winners, module_entries, scope, tok).is_empty()
+        || module_roots.contains(tok)
+    {
         out.insert(tok.to_string());
         return;
     }
     if let Some((base, ext)) = tok.rsplit_once('.') {
         if ResType::from_extension(ext).is_some()
-            && (known.contains(base) || module_roots.contains(base))
+            && (!resolve_in_scope(index, winners, module_entries, scope, base).is_empty()
+                || module_roots.contains(base))
         {
             out.insert(base.to_string());
             return;
@@ -975,6 +1009,48 @@ fn consider_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn global_lookup(
+        resrefs: &[&str],
+    ) -> (
+        Index,
+        HashMap<(Scope, String, ResType), u32>,
+        HashMap<String, Vec<u32>>,
+    ) {
+        use serde_json::json;
+        let ncs = ResType::from_extension("ncs").unwrap().0;
+        let resources: Vec<serde_json::Value> = resrefs
+            .iter()
+            .map(|rr| {
+                json!({
+                    "resref": rr,
+                    "restype": ncs,
+                    "file": 0,
+                    "offset": 0,
+                    "size": 1,
+                    "source": 0
+                })
+            })
+            .collect();
+        let mut index: Index = serde_json::from_value(json!({
+            "schema": 3,
+            "root": "/game",
+            "kind": "install",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": ["/game/data/scripts.bif"],
+            "sources": [
+                {"kind":"chitin","label":"scripts.bif","precedence":700,"module_root":null}
+            ],
+            "resources": resources,
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+        let winners = scoped_winners(&index);
+        let module_entries = module_entry_ids(&index, &winners);
+        (index, winners, module_entries)
+    }
 
     fn fixture_two_modules_shared_are() -> Index {
         use serde_json::json;
@@ -1093,12 +1169,15 @@ mod tests {
 
     #[test]
     fn tokens_ignore_self_and_stars() {
-        let known = HashSet::from(["n_bastila".into(), "k_ai_master".into(), "danm13".into()]);
+        let (index, winners, entries) = global_lookup(&["n_bastila", "k_ai_master", "danm13"]);
         let roots = HashSet::new();
         let mut out = HashSet::new();
         take_tokens(
             "Tag=n_bastila Script=k_ai_master ****",
-            &known,
+            &index,
+            &winners,
+            &entries,
+            &None,
             &roots,
             "n_bastila",
             Some("utc"),
@@ -1154,12 +1233,15 @@ mod tests {
         assert!(edges.get(&are_id).unwrap().contains("m01aa"));
 
         // Tokenize path: scanning ARE text that contains "m01aa.lyt" must keep the token.
-        let known = HashSet::from(["m01aa".into()]);
         let roots = HashSet::new();
         let mut out = HashSet::new();
+        let scope = Some("end_m01aa".into());
         take_tokens(
             "m01aa.lyt",
-            &known,
+            &index,
+            &winners,
+            &HashMap::new(),
+            &scope,
             &roots,
             "m01aa",
             Some("are"),
@@ -1388,12 +1470,15 @@ mod tests {
 
     #[test]
     fn start_new_module_token_counts_without_resref() {
-        let known = HashSet::new();
+        let (index, winners, entries) = global_lookup(&[]);
         let roots = HashSet::from(["end_m01aa".into()]);
         let mut out = HashSet::new();
         take_tokens(
             "StartNewModule(\"end_m01aa\")",
-            &known,
+            &index,
+            &winners,
+            &entries,
+            &None,
             &roots,
             "k_sup_gohawk",
             Some("ncs"),
@@ -1405,12 +1490,15 @@ mod tests {
 
     #[test]
     fn filename_token_counts_as_resref() {
-        let known = HashSet::from(["n_bastila".into()]);
+        let (index, winners, entries) = global_lookup(&["n_bastila"]);
         let roots = HashSet::new();
         let mut out = HashSet::new();
         take_tokens(
             "n_bastila.utc",
-            &known,
+            &index,
+            &winners,
+            &entries,
+            &None,
             &roots,
             "k_ai_master",
             Some("ncs"),
@@ -1433,7 +1521,7 @@ mod tests {
 
     #[test]
     fn walk_json_does_not_tokenize_object_keys() {
-        let known = HashSet::from(["name".into(), "offset".into(), "k_ai_master".into()]);
+        let (index, winners, entries) = global_lookup(&["name", "offset", "k_ai_master"]);
         let roots = HashSet::new();
         let mut mentions = HashSet::new();
         let mut strrefs = HashSet::new();
@@ -1442,7 +1530,10 @@ mod tests {
         walk_json(
             &v,
             &mut Walk {
-                known: &known,
+                index: &index,
+                winners: &winners,
+                module_entries: &entries,
+                scope: &None,
                 module_roots: &roots,
                 self_ref: "row",
                 self_ext: None,
@@ -1460,22 +1551,36 @@ mod tests {
 
     #[test]
     fn consider_token_skips_pure_numeric() {
-        let known = HashSet::from(["3".into()]);
+        let (index, winners, entries) = global_lookup(&["3"]);
         let roots = HashSet::new();
         let mut out = HashSet::new();
-        consider_token("3", &known, &roots, "x", None, &mut out, None);
+        consider_token(
+            "3",
+            &index,
+            &winners,
+            &entries,
+            &None,
+            &roots,
+            "x",
+            None,
+            &mut out,
+            None,
+        );
         assert!(out.is_empty());
     }
 
     #[test]
     fn collect_records_missing_resref_shaped_tokens() {
-        let known = HashSet::new();
+        let (index, winners, entries) = global_lookup(&[]);
         let roots = HashSet::new();
         let mut mentions = HashSet::new();
         let mut missing = HashSet::new();
         take_tokens(
             "StartNewModule(k_rapidtransit)",
-            &known,
+            &index,
+            &winners,
+            &entries,
+            &None,
             &roots,
             "k_sup_gohawk",
             Some("ncs"),
@@ -1487,14 +1592,48 @@ mod tests {
     }
 
     #[test]
+    fn foreign_module_only_resref_is_missing_not_mention() {
+        let index = fixture_two_modules_shared_are();
+        let winners = scoped_winners(&index);
+        let module_entries = module_entry_ids(&index, &winners);
+        let roots = HashSet::new();
+        let scope = resource_scope(&index, &index.resources[1]);
+        assert_eq!(scope.as_deref(), Some("ebo_m40ad"));
+        let mut mentions = HashSet::new();
+        let mut missing = HashSet::new();
+        // `local` exists only in ebo_m12aa. A resource in ebo_m40ad must
+        // not treat the global catalog hit as an existing edge.
+        consider_token(
+            "local",
+            &index,
+            &winners,
+            &module_entries,
+            &scope,
+            &roots,
+            "module",
+            Some("ifo"),
+            &mut mentions,
+            Some(&mut missing),
+        );
+        assert!(
+            mentions.is_empty(),
+            "foreign-only resref must not be an existing mention; mentions={mentions:?}"
+        );
+        assert!(missing.contains("local"));
+    }
+
+    #[test]
     fn livegraph_missing_map_survives_build_shape() {
-        let known = HashSet::new();
+        let (index, winners, entries) = global_lookup(&[]);
         let roots = HashSet::new();
         let mut mentions = HashSet::new();
         let mut missing = HashSet::new();
         consider_token(
             "nw_o0_death",
-            &known,
+            &index,
+            &winners,
+            &entries,
+            &None,
             &roots,
             "module",
             Some("ifo"),
