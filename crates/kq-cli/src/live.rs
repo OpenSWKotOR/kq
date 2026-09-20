@@ -273,15 +273,37 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
         };
         for &i in ids {
             let r = &index.resources[i as usize];
-            if r.restype.extension() == Some("mdl") {
-                continue; // Task 10: texture_refs
-            }
             let end = r.offset as usize + r.size as usize;
             if end > map.len() {
                 continue;
             }
             let bytes = &map[r.offset as usize..end];
-            let owned = bytes.to_vec(); // interim; Task 10 avoids heavy mdl JSON
+            if r.restype.extension() == Some("mdl") {
+                let mut mentions = HashSet::new();
+                let mut missing = HashSet::new();
+                let scope = resource_scope(index, r);
+                for name in kq_format::mdl::texture_refs(bytes) {
+                    consider_token(
+                        &name,
+                        index,
+                        &winners_map,
+                        &module_entries,
+                        &scope,
+                        &module_roots,
+                        &r.resref,
+                        Some("mdl"),
+                        &mut mentions,
+                        Some(&mut missing),
+                    );
+                }
+                if !mentions.is_empty() || !missing.is_empty() {
+                    hits.lock()
+                        .expect("live scan lock")
+                        .push((i, mentions, HashSet::new(), missing));
+                }
+                continue;
+            }
+            let owned = bytes.to_vec();
             let Ok(decoded) = render::decode_resource(index, r, &owned) else {
                 continue;
             };
@@ -1699,5 +1721,48 @@ mod tests {
     #[test]
     fn nwscript_remains_engine_always_seed_name() {
         assert!(ENGINE_ALWAYS.contains(&"nwscript"));
+    }
+
+    #[test]
+    fn texture_refs_names_are_collected_from_ascii_mdl() {
+        let ascii = b"newmodel test\nsetsupermodel test NULL\nbeginmodelgeom test\n  node trimesh mesh\n  {\n    bitmap cm_baremetal\n    lightmap m01aa_lm\n  }\nendmodelgeom test\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.mdl");
+        std::fs::write(&path, ascii).unwrap();
+
+        let mdl = ResType::from_extension("mdl").unwrap().0;
+        let tpc = ResType::from_extension("tpc").unwrap().0;
+        let mut index: Index = serde_json::from_value(serde_json::json!({
+            "schema": 3,
+            "root": dir.path().to_string_lossy(),
+            "kind": "file",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": [path.to_string_lossy()],
+            "sources": [
+                {"kind":"loose","label":"test.mdl","precedence":800,"module_root":null}
+            ],
+            "resources": [
+                {"resref":"test","restype":mdl,"file":0,"offset":0,"size":ascii.len(),"source":0},
+                {"resref":"cm_baremetal","restype":tpc,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"m01aa_lm","restype":tpc,"file":0,"offset":0,"size":1,"source":0}
+            ],
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+
+        let graph = build(&index).unwrap();
+        let mentions: HashSet<&String> = graph.edges.values().flatten().collect();
+        assert!(
+            mentions.iter().any(|s| *s == "cm_baremetal"),
+            "edges={:?}",
+            graph.edges
+        );
+        assert!(
+            mentions.iter().any(|s| *s == "m01aa_lm"),
+            "edges={:?}",
+            graph.edges
+        );
     }
 }
