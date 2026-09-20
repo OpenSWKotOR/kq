@@ -38,6 +38,7 @@ const SOURCE_EXTS: &[&str] = &["nss"];
 const MODULE_ENTRY_EXTS: &[&str] = &["ifo", "are", "git", "lyt", "vis", "pth"];
 
 /// Engine-opened talk files and the include the compiler always sees.
+/// `nwscript` stays a seed name; `.nss` is not scanned so comments cannot seed the graph.
 const ENGINE_ALWAYS: &[&str] = &["dialog", "dialogf", "nwscript"];
 
 /// 2DA filenames that appear as strings in `swkotor.exe` (K1 GOG/Steam) and
@@ -424,7 +425,15 @@ fn module_entry_ids(
 }
 
 fn is_scan_source(t: ResType) -> bool {
-    t.is_gff() || t.is_plain_text() || matches!(t.extension(), Some("2da" | "ncs" | "ssf" | "mdl"))
+    if t.is_gff() {
+        return true;
+    }
+    match t.extension() {
+        Some("2da" | "ncs" | "ssf" | "mdl") => true,
+        Some("nss") => false,
+        Some(_) if t.is_plain_text() => true,
+        _ => false,
+    }
 }
 
 fn strref_mode(t: ResType) -> StrRefMode {
@@ -767,7 +776,7 @@ fn walk_json(v: &J, w: &mut Walk<'_>, key: Option<&str>) {
         }
         J::Object(map) => {
             for (k, val) in map {
-                take_tokens(k, w.known, w.module_roots, w.self_ref, w.self_ext, w.mentions);
+                // Do not tokenize object keys (column labels, NCS field names, etc.).
                 walk_json(val, w, Some(k));
             }
         }
@@ -837,6 +846,9 @@ fn consider_token(
     out: &mut HashSet<String>,
 ) {
     if tok.is_empty() || tok == "****" {
+        return;
+    }
+    if !tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit()) {
         return;
     }
     // Skip tokenizer noise for *this* resource (bare resref). Synthetic ARE
@@ -1290,5 +1302,52 @@ mod tests {
         assert_eq!(parse_strref("****"), None);
         assert_eq!(parse_strref("-1"), None);
         assert_eq!(parse_strref("48012"), Some(48012));
+    }
+
+    #[test]
+    fn walk_json_does_not_tokenize_object_keys() {
+        let known = HashSet::from(["name".into(), "offset".into(), "k_ai_master".into()]);
+        let roots = HashSet::new();
+        let mut mentions = HashSet::new();
+        let mut strrefs = HashSet::new();
+        let v = serde_json::json!({"name": "k_ai_master", "offset": 0});
+        walk_json(
+            &v,
+            &mut Walk {
+                known: &known,
+                module_roots: &roots,
+                self_ref: "row",
+                self_ext: None,
+                mode: StrRefMode::None,
+                mentions: &mut mentions,
+                strrefs: &mut strrefs,
+            },
+            None,
+        );
+        assert!(!mentions.contains("name"));
+        assert!(!mentions.contains("offset"));
+        assert!(mentions.contains("k_ai_master"));
+    }
+
+    #[test]
+    fn consider_token_skips_pure_numeric() {
+        let known = HashSet::from(["3".into()]);
+        let roots = HashSet::new();
+        let mut out = HashSet::new();
+        consider_token("3", &known, &roots, "x", None, &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn nss_is_not_a_scan_source() {
+        let nss = ResType::from_extension("nss").unwrap();
+        assert!(!is_scan_source(nss));
+        let ncs = ResType::from_extension("ncs").unwrap();
+        assert!(is_scan_source(ncs));
+    }
+
+    #[test]
+    fn nwscript_remains_engine_always_seed_name() {
+        assert!(ENGINE_ALWAYS.contains(&"nwscript"));
     }
 }
