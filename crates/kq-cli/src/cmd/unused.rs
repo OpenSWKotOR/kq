@@ -7,7 +7,7 @@
 //!
 //! `kq leftovers` is the same graph plus unused `dialog.tlk` rows.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufWriter, Write};
 
 use anyhow::Result;
@@ -26,9 +26,13 @@ pub struct Args {
     #[arg(long)]
     no_assets: bool,
 
-    /// Only the winning copy of each name (shadowed copies omitted).
-    #[arg(long)]
+    /// Deprecated: winners-only-per-scope is now the default.
+    #[arg(long, hide = true)]
     winners_only: bool,
+
+    /// Also list non-winner copies with status=shadowed.
+    #[arg(long)]
+    shadowed: bool,
 
     /// Print counts by type instead of every name.
     #[arg(long)]
@@ -61,6 +65,8 @@ pub struct Row<'a> {
     pub parent_path: Option<String>,
     pub mentions: Vec<String>,
     pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadowed_by: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -72,6 +78,7 @@ struct Summary {
     used: usize,
     candidates: usize,
     unused: usize,
+    shadowed: usize,
     by_type: Vec<TypeCount>,
 }
 
@@ -84,20 +91,24 @@ pub struct TypeCount {
 }
 
 pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
+    let _ = args.winners_only;
     let index = ctx.index()?;
     let graph = live::build(&index)?;
-    let candidates = leftover_ids(
-        &index,
-        &graph,
-        &args.filter,
-        args.no_assets,
-        args.winners_only,
-    )?;
-    let all_candidates = candidate_ids(&index, &args.filter, args.no_assets, args.winners_only)?;
+    let leftover = leftover_ids(&index, &graph, &args.filter, args.no_assets, false)?;
+    let all_candidates = candidate_ids(&index, &args.filter, args.no_assets, args.shadowed)?;
     let candidate_count = all_candidates.len();
     let winners = winner_set(&index, &all_candidates);
-    let by_type_rows = count_by_type(&index, &candidates);
-    let unused_count = candidates.len();
+    let by_type_rows = count_by_type(&index, &leftover);
+    let unused_count = leftover.len();
+    let shadowed_ids: Vec<u32> = if args.shadowed {
+        all_candidates
+            .iter()
+            .copied()
+            .filter(|i| !winners.contains(i))
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let stdout = std::io::stdout();
     let mut w = BufWriter::new(stdout.lock());
@@ -111,6 +122,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
             used: graph.used.len(),
             candidates: candidate_count,
             unused: unused_count,
+            shadowed: shadowed_ids.len(),
             by_type: by_type_rows,
         };
         if ctx.out.json {
@@ -143,15 +155,21 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     }
 
     write_resource_rows(
-        ctx,
-        &mut w,
-        &index,
-        &graph,
-        &winners,
-        &candidates,
-        args.limit,
-        args.quiet,
+        ctx, &mut w, &index, &graph, &winners, &leftover, args.limit, args.quiet, "leftover",
     )?;
+    if args.shadowed {
+        write_resource_rows(
+            ctx,
+            &mut w,
+            &index,
+            &graph,
+            &winners,
+            &shadowed_ids,
+            0,
+            args.quiet,
+            "shadowed",
+        )?;
+    }
     if !ctx.out.json && !args.quiet && args.limit == 0 {
         writeln!(
             w,
@@ -174,11 +192,12 @@ pub fn candidate_ids(
     index: &kq_index::Index,
     filter: &Filter,
     no_assets: bool,
-    winners_only: bool,
+    include_shadowed: bool,
 ) -> Result<Vec<u32>> {
+    let winners = live::scoped_winner_id_set(index);
     let mut candidates = filter.select(index, "")?;
-    if winners_only {
-        Filter::dedup_winners(index, &mut candidates);
+    if !include_shadowed {
+        candidates.retain(|&i| winners.contains(&i));
     }
     if no_assets && filter.types.is_empty() {
         candidates.retain(|&i| !live::is_asset(index.resources[i as usize].restype));
@@ -194,24 +213,22 @@ pub fn leftover_ids(
     graph: &LiveGraph,
     filter: &Filter,
     no_assets: bool,
-    winners_only: bool,
+    include_shadowed: bool,
 ) -> Result<Vec<u32>> {
-    let mut candidates = candidate_ids(index, filter, no_assets, winners_only)?;
+    let mut candidates = candidate_ids(index, filter, no_assets, include_shadowed)?;
     candidates.retain(|&i| !graph.used_ids.contains(&i));
     Ok(candidates)
 }
 
-pub fn winner_set(index: &kq_index::Index, ids: &[u32]) -> std::collections::HashSet<u32> {
-    let mut winners = ids.to_vec();
-    Filter::dedup_winners(index, &mut winners);
-    winners.into_iter().collect()
+pub fn winner_set(index: &kq_index::Index, _ids: &[u32]) -> HashSet<u32> {
+    live::scoped_winner_id_set(index)
 }
 
 pub fn resource_row<'a>(
     index: &'a kq_index::Index,
     id: u32,
     graph: &LiveGraph,
-    winners: &std::collections::HashSet<u32>,
+    winners: &HashSet<u32>,
     status: &'static str,
 ) -> Row<'a> {
     let r = &index.resources[id as usize];
@@ -229,6 +246,8 @@ pub fn resource_row<'a>(
             v
         })
         .unwrap_or_default();
+    let shadowed_by =
+        live::shadowed_by(index, id).map(|p| index.virt_path(&index.resources[p as usize]));
     Row {
         id,
         name: r.filename(),
@@ -245,6 +264,7 @@ pub fn resource_row<'a>(
         parent_path,
         mentions,
         status,
+        shadowed_by,
     }
 }
 
@@ -275,10 +295,11 @@ pub fn write_resource_rows(
     w: &mut impl Write,
     index: &kq_index::Index,
     graph: &LiveGraph,
-    winners: &std::collections::HashSet<u32>,
+    winners: &HashSet<u32>,
     ids: &[u32],
     limit: usize,
     quiet: bool,
+    status: &'static str,
 ) -> Result<()> {
     let unused_count = ids.len();
     let printed = if limit > 0 && ids.len() > limit {
@@ -294,7 +315,7 @@ pub fn write_resource_rows(
                     .json_line(w, &serde_json::json!({ "path": index.virt_path(r) }))?;
             } else {
                 ctx.out
-                    .json_line(w, &resource_row(index, i, graph, winners, "leftover"))?;
+                    .json_line(w, &resource_row(index, i, graph, winners, status))?;
             }
         } else if quiet {
             writeln!(w, "{}", index.virt_path(r))?;
@@ -302,7 +323,7 @@ pub fn write_resource_rows(
             writeln!(w, "{}  {:>10}", ctx.out.accent(&index.virt_path(r)), r.size)?;
         }
     }
-    if !ctx.out.json && !quiet && limit > 0 && unused_count > limit {
+    if status == "leftover" && !ctx.out.json && !quiet && limit > 0 && unused_count > limit {
         writeln!(
             w,
             "{}",
@@ -313,4 +334,91 @@ pub fn write_resource_rows(
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kq_format::ResType;
+    use kq_index::Index;
+    use serde_json::json;
+    use std::collections::{HashMap, HashSet};
+
+    fn fixture_mod_and_rim() -> Index {
+        let ncs = ResType::from_extension("ncs").unwrap().0;
+        let mut index: Index = serde_json::from_value(json!({
+            "schema": 3,
+            "root": "/game",
+            "kind": "install",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": [
+                "/game/modules/tar_m03aa.mod",
+                "/game/modules/tar_m03aa_s.rim",
+                "/game/modules/tar_m02aa.mod"
+            ],
+            "sources": [
+                {"kind":"module-mod","label":"tar_m03aa.mod","precedence":100,"module_root":"tar_m03aa"},
+                {"kind":"module-rim","label":"tar_m03aa_s.rim","precedence":200,"module_root":"tar_m03aa"},
+                {"kind":"module-mod","label":"tar_m02aa.mod","precedence":100,"module_root":"tar_m02aa"}
+            ],
+            "resources": [
+                {"resref":"k_ptar_rndtalk0","restype":ncs,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"k_ptar_rndtalk0","restype":ncs,"file":1,"offset":0,"size":1,"source":1},
+                {"resref":"k_ptar_rndtalk0","restype":ncs,"file":2,"offset":0,"size":1,"source":2}
+            ],
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+        index
+    }
+
+    #[test]
+    fn candidate_ids_default_skips_rim_and_foreign_module_copies() {
+        let index = fixture_mod_and_rim();
+        let ids = candidate_ids(&index, &Filter::default(), false, false).unwrap();
+        let winners = live::scoped_winner_id_set(&index);
+        assert_eq!(ids.len(), 2);
+        assert!(ids.iter().all(|i| winners.contains(i)));
+    }
+
+    #[test]
+    fn candidate_ids_shadowed_includes_rim_non_winner() {
+        let index = fixture_mod_and_rim();
+        let all = candidate_ids(&index, &Filter::default(), false, true).unwrap();
+        let only = candidate_ids(&index, &Filter::default(), false, false).unwrap();
+        assert!(all.len() > only.len());
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn resource_row_shadowed_status_has_shadowed_by() {
+        let index = fixture_mod_and_rim();
+        let rim_id = 1u32;
+        // Prefer adding empty `missing` / `module_entries` on LiveGraph in this task
+        // so Task 8 only fills them.
+        let graph = LiveGraph {
+            catalog: HashSet::new(),
+            seeds: vec![],
+            seed_ids: vec![],
+            reachable: HashSet::new(),
+            used_ids: HashSet::new(),
+            parent: HashMap::new(),
+            edges: HashMap::new(),
+            missing: HashMap::new(),
+            module_entries: HashMap::new(),
+            used: HashSet::new(),
+            used_strrefs: HashSet::new(),
+            tlk: vec![],
+            scanned: 0,
+        };
+        let winners = live::scoped_winner_id_set(&index);
+        let row = resource_row(&index, rim_id, &graph, &winners, "shadowed");
+        assert_eq!(row.status, "shadowed");
+        assert_eq!(
+            row.shadowed_by.as_deref(),
+            Some("modules/tar_m03aa.mod/k_ptar_rndtalk0.ncs")
+        );
+    }
 }

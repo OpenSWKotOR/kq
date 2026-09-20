@@ -43,9 +43,13 @@ pub struct Args {
     #[arg(long)]
     no_assets: bool,
 
-    /// Only the winning copy of each name (shadowed copies omitted).
-    #[arg(long)]
+    /// Deprecated: winners-only-per-scope is now the default.
+    #[arg(long, hide = true)]
     winners_only: bool,
+
+    /// Also list non-winner copies with status=shadowed.
+    #[arg(long)]
+    shadowed: bool,
 
     /// Print counts instead of every leftover string / name.
     #[arg(long)]
@@ -72,6 +76,7 @@ struct Report<'a> {
     reachable_resrefs: usize,
     used_resrefs: usize,
     leftover_resources: usize,
+    shadowed: usize,
     tlk_entries: usize,
     used_strings: usize,
     leftover_strings: usize,
@@ -83,20 +88,24 @@ struct Report<'a> {
 }
 
 pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
+    let _ = args.winners_only;
     let index = ctx.index()?;
     let graph = live::build(&index)?;
 
-    let in_scope = unused::candidate_ids(&index, &args.filter, args.no_assets, args.winners_only)?;
+    let in_scope = unused::candidate_ids(&index, &args.filter, args.no_assets, args.shadowed)?;
     let winners = unused::winner_set(&index, &in_scope);
-    let resource_ids = unused::leftover_ids(
-        &index,
-        &graph,
-        &args.filter,
-        args.no_assets,
-        args.winners_only,
-    )?;
+    let resource_ids = unused::leftover_ids(&index, &graph, &args.filter, args.no_assets, false)?;
     let leftover_resources = resource_ids.len();
     let by_type = unused::count_by_type(&index, &resource_ids);
+    let shadowed_ids: Vec<u32> = if args.shadowed {
+        in_scope
+            .iter()
+            .copied()
+            .filter(|i| !winners.contains(i))
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let leftover_tlk = graph.leftover_strings();
     let leftover_empty = leftover_tlk.iter().filter(|r| r.text.is_empty()).count();
@@ -117,6 +126,11 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let leftover_resource_rows: Vec<_> = resource_ids
         .iter()
         .map(|&id| unused::resource_row(&index, id, &graph, &winners, "leftover"))
+        .chain(
+            shadowed_ids
+                .iter()
+                .map(|&id| unused::resource_row(&index, id, &graph, &winners, "shadowed")),
+        )
         .collect();
 
     let report = Report {
@@ -126,6 +140,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         reachable_resrefs: graph.reachable.len(),
         used_resrefs: graph.used.len(),
         leftover_resources,
+        shadowed: shadowed_ids.len(),
         tlk_entries: graph.tlk.len(),
         used_strings: graph.used_strrefs.len(),
         leftover_strings: leftover_tlk.len(),
@@ -204,7 +219,21 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
             &resource_ids,
             args.limit,
             false,
+            "leftover",
         )?;
+        if args.shadowed {
+            unused::write_resource_rows(
+                ctx,
+                &mut w,
+                &index,
+                &graph,
+                &winners,
+                &shadowed_ids,
+                0,
+                false,
+                "shadowed",
+            )?;
+        }
         w.flush()?;
         return Ok(if leftover_resources == 0 {
             exit::NO_MATCH

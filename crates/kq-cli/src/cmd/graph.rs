@@ -35,9 +35,13 @@ pub struct Args {
     #[arg(long)]
     no_assets: bool,
 
-    /// Only the winning copy of each name (shadowed copies omitted).
-    #[arg(long)]
+    /// Deprecated: winners-only-per-scope is now the default.
+    #[arg(long, hide = true)]
     winners_only: bool,
+
+    /// Also list non-winner copies with status=shadowed.
+    #[arg(long)]
+    shadowed: bool,
 
     /// Counts only — no tree or path lists.
     #[arg(long)]
@@ -102,18 +106,13 @@ struct Report<'a> {
 }
 
 pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
+    let _ = args.winners_only;
     let index = ctx.index()?;
     let graph = live::build(&index)?;
 
-    let in_scope = unused::candidate_ids(&index, &args.filter, args.no_assets, args.winners_only)?;
+    let in_scope = unused::candidate_ids(&index, &args.filter, args.no_assets, args.shadowed)?;
     let winners = unused::winner_set(&index, &in_scope);
-    let leftover_ids = unused::leftover_ids(
-        &index,
-        &graph,
-        &args.filter,
-        args.no_assets,
-        args.winners_only,
-    )?;
+    let leftover_ids = unused::leftover_ids(&index, &graph, &args.filter, args.no_assets, false)?;
 
     let mut used_ids: Vec<u32> = graph
         .used_ids
@@ -156,7 +155,9 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let mut catalog: Vec<unused::Row<'_>> = in_scope
         .iter()
         .map(|&id| {
-            let status = if leftover_set.contains(&id) {
+            let status = if !winners.contains(&id) {
+                "shadowed"
+            } else if leftover_set.contains(&id) {
                 "leftover"
             } else {
                 "used"
@@ -282,6 +283,22 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         }
         for row in apply_limit_slice(&leftover_strings, args.limit) {
             writeln!(w, "  {:>7}  {}", row.strref, one_line(&row.text, 120))?;
+        }
+        if args.shadowed {
+            let shadowed: Vec<u32> = in_scope
+                .iter()
+                .copied()
+                .filter(|i| !winners.contains(i))
+                .collect();
+            writeln!(w)?;
+            writeln!(
+                w,
+                "{}",
+                o.bold(&format!("SHADOWED — {} copies", shadowed.len()))
+            )?;
+            for &i in &shadowed {
+                writeln!(w, "  {}", index.virt_path(&index.resources[i as usize]))?;
+            }
         }
     }
 

@@ -218,6 +218,12 @@ pub struct LiveGraph {
     pub parent: HashMap<u32, u32>,
     /// ResRef / module-root tokens each used resource mentions.
     pub edges: HashMap<u32, HashSet<String>>,
+    /// Mentioned tokens with no scoped winner (filled by Task 8).
+    #[allow(dead_code)]
+    pub missing: HashMap<u32, HashSet<String>>,
+    /// Module-root → scoped entry resource ids (ifo/are/git/pth).
+    #[allow(dead_code)]
+    pub module_entries: HashMap<String, Vec<u32>>,
     /// ResRefs of `used_ids`, plus VO names on used talk-table rows.
     pub used: HashSet<String>,
     pub used_strrefs: HashSet<i64>,
@@ -338,6 +344,8 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
         used_ids,
         parent,
         edges,
+        missing: HashMap::new(),
+        module_entries,
         used,
         used_strrefs,
         tlk,
@@ -388,6 +396,38 @@ pub fn scoped_winners(index: &Index) -> HashMap<(Scope, String, ResType), u32> {
     best.into_iter().map(|(k, (id, _))| (k, id)).collect()
 }
 
+/// Resource ids that win in their own scope (module-local or global).
+pub fn scoped_winner_id_set(index: &Index) -> HashSet<u32> {
+    scoped_winners(index).into_values().collect()
+}
+
+/// Higher-precedence copy in the same scope, or Override of the same
+/// `(resref, type)` when `id` is a module-scoped copy.
+pub fn shadowed_by(index: &Index, id: u32) -> Option<u32> {
+    let r = &index.resources[id as usize];
+    let scope = resource_scope(index, r);
+    let winners = scoped_winners(index);
+    let winner = winners
+        .get(&(scope.clone(), r.resref.clone(), r.restype))
+        .copied()?;
+    if winner == id {
+        if let Some(&ov) = winners.get(&(None, r.resref.clone(), r.restype)) {
+            if index.source(&index.resources[ov as usize]).kind == kq_index::SourceKind::Override
+                && scope.is_some()
+            {
+                return Some(ov);
+            }
+        }
+        return None;
+    }
+    Some(winner)
+}
+
+#[allow(dead_code)]
+pub fn is_shadowed(index: &Index, id: u32) -> bool {
+    shadowed_by(index, id).is_some()
+}
+
 #[allow(dead_code)] // retained for Task 5 / global fallback tooling
 fn all_winners(index: &Index) -> Vec<u32> {
     let mut ids: Vec<u32> = (0..index.resources.len() as u32).collect();
@@ -414,8 +454,12 @@ fn module_entry_ids(
     const ENTRY: &[&str] = &["ifo", "are", "git", "pth"]; // lyt/vis chitin handled in Task 5
     let mut map: HashMap<String, Vec<u32>> = HashMap::new();
     for ((scope, _resref, restype), &id) in winners {
-        let Some(root) = scope.as_deref() else { continue };
-        let Some(ext) = restype.extension() else { continue };
+        let Some(root) = scope.as_deref() else {
+            continue;
+        };
+        let Some(ext) = restype.extension() else {
+            continue;
+        };
         if !ENTRY.contains(&ext) {
             continue;
         }
@@ -746,7 +790,14 @@ struct Walk<'a> {
 fn walk_json(v: &J, w: &mut Walk<'_>, key: Option<&str>) {
     match v {
         J::String(s) => {
-            take_tokens(s, w.known, w.module_roots, w.self_ref, w.self_ext, w.mentions);
+            take_tokens(
+                s,
+                w.known,
+                w.module_roots,
+                w.self_ref,
+                w.self_ext,
+                w.mentions,
+            );
             if matches!(w.mode, StrRefMode::TwoDa) && key.is_some_and(is_strref_column) {
                 if let Some(n) = parse_strref(s) {
                     w.strrefs.insert(n);
@@ -938,10 +989,7 @@ mod tests {
 
         let catalog: HashSet<String> = index.resources.iter().map(|r| r.resref.clone()).collect();
         let (labels, ids) = seed_ids(&index, &catalog, &winners_map, &module_entries);
-        assert!(
-            labels.iter().any(|s| s == "ebo_m40ad"),
-            "labels={labels:?}"
-        );
+        assert!(labels.iter().any(|s| s == "ebo_m40ad"), "labels={labels:?}");
         assert!(!ids.is_empty());
         // At least one seed id must belong to ebo_m40ad's module source.
         assert!(ids.iter().any(|&i| {
@@ -959,11 +1007,19 @@ mod tests {
         let winners = scoped_winners(&index);
         let ifo = ResType::from_extension("ifo").unwrap();
         let are = ResType::from_extension("are").unwrap();
-        let a = winners.get(&(Some("ebo_m12aa".into()), "module".into(), ifo)).copied();
-        let b = winners.get(&(Some("ebo_m40ad".into()), "module".into(), ifo)).copied();
+        let a = winners
+            .get(&(Some("ebo_m12aa".into()), "module".into(), ifo))
+            .copied();
+        let b = winners
+            .get(&(Some("ebo_m40ad".into()), "module".into(), ifo))
+            .copied();
         assert!(a.is_some() && b.is_some() && a != b);
-        let are_a = winners.get(&(Some("ebo_m12aa".into()), "m12aa".into(), are)).copied();
-        let are_b = winners.get(&(Some("ebo_m40ad".into()), "m12aa".into(), are)).copied();
+        let are_a = winners
+            .get(&(Some("ebo_m12aa".into()), "m12aa".into(), are))
+            .copied();
+        let are_b = winners
+            .get(&(Some("ebo_m40ad".into()), "m12aa".into(), are))
+            .copied();
         assert!(are_a.is_some() && are_b.is_some() && are_a != are_b);
     }
 
@@ -975,7 +1031,10 @@ mod tests {
         let id = *winners
             .get(&(Some("ebo_m12aa".into()), "local".into(), ncs))
             .unwrap();
-        assert_eq!(index.source(&index.resources[id as usize]).label, "ebo_m12aa.mod");
+        assert_eq!(
+            index.source(&index.resources[id as usize]).label,
+            "ebo_m12aa.mod"
+        );
     }
 
     #[test]
@@ -985,7 +1044,10 @@ mod tests {
         let ncs = ResType::from_extension("ncs").unwrap();
         // Global scope winner for "shared" is Override.
         let id = *winners.get(&(None, "shared".into(), ncs)).unwrap();
-        assert_eq!(index.source(&index.resources[id as usize]).kind, kq_index::SourceKind::Override);
+        assert_eq!(
+            index.source(&index.resources[id as usize]).kind,
+            kq_index::SourceKind::Override
+        );
         // Module still has its own scoped winner.
         assert!(winners.contains_key(&(Some("ebo_m12aa".into()), "shared".into(), ncs)));
     }
@@ -1043,7 +1105,11 @@ mod tests {
         let mut edges = HashMap::new();
         add_are_layout_edges(&index, &winners, &mut edges);
         let are_id = *winners
-            .get(&(Some("end_m01aa".into()), "m01aa".into(), ResType::from_extension("are").unwrap()))
+            .get(&(
+                Some("end_m01aa".into()),
+                "m01aa".into(),
+                ResType::from_extension("are").unwrap(),
+            ))
             .unwrap();
         assert!(edges.get(&are_id).unwrap().contains("m01aa"));
 
@@ -1217,7 +1283,11 @@ mod tests {
         let winners = scoped_winners(&index);
         let module_entries = module_entry_ids(&index, &winners);
         let ifo_id = *winners
-            .get(&(Some("end_m01aa".into()), "module".into(), ResType::from_extension("ifo").unwrap()))
+            .get(&(
+                Some("end_m01aa".into()),
+                "module".into(),
+                ResType::from_extension("ifo").unwrap(),
+            ))
             .unwrap();
         let mut edges = HashMap::new();
         edges.insert(ifo_id, HashSet::from(["k_pend_activate".into()]));
@@ -1289,7 +1359,14 @@ mod tests {
         let known = HashSet::from(["n_bastila".into()]);
         let roots = HashSet::new();
         let mut out = HashSet::new();
-        take_tokens("n_bastila.utc", &known, &roots, "k_ai_master", Some("ncs"), &mut out);
+        take_tokens(
+            "n_bastila.utc",
+            &known,
+            &roots,
+            "k_ai_master",
+            Some("ncs"),
+            &mut out,
+        );
         assert!(out.contains("n_bastila"));
     }
 
