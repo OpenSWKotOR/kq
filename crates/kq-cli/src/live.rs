@@ -248,7 +248,6 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
         v.dedup();
         v
     };
-    let by_resref = winners_by_resref(index, &winners); // temporary; Task 4 replaces resolution
     let module_entries = module_entry_ids(index, &winners_map);
 
     let mut scan_ids = winners.clone();
@@ -298,8 +297,8 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
         }
     }
 
-    let (seed_labels, seed_ids) = seed_ids(index, &catalog, &by_resref, &module_entries);
-    let (used_ids, parent) = bfs(&seed_ids, &edges, &by_resref, &module_entries);
+    let (seed_labels, seed_ids) = seed_ids(index, &catalog, &winners_map, &module_entries);
+    let (used_ids, parent) = bfs(index, &seed_ids, &edges, &winners_map, &module_entries);
 
     let tlk = load_dialog_tlk(index)?;
     let tlk_len = tlk.len() as i64;
@@ -386,7 +385,7 @@ pub fn scoped_winners(index: &Index) -> HashMap<(Scope, String, ResType), u32> {
     best.into_iter().map(|(k, (id, _))| (k, id)).collect()
 }
 
-#[allow(dead_code)] // retained until Task 4 replaces global BFS resolution
+#[allow(dead_code)] // retained for Task 5 / global fallback tooling
 fn all_winners(index: &Index) -> Vec<u32> {
     let mut ids: Vec<u32> = (0..index.resources.len() as u32).collect();
     ids.sort_by(|&a, &b| {
@@ -402,16 +401,6 @@ fn all_winners(index: &Index) -> Vec<u32> {
     });
     Filter::dedup_winners(index, &mut ids);
     ids
-}
-
-fn winners_by_resref(index: &Index, winners: &[u32]) -> HashMap<String, Vec<u32>> {
-    let mut map: HashMap<String, Vec<u32>> = HashMap::new();
-    for &i in winners {
-        map.entry(index.resources[i as usize].resref.clone())
-            .or_default()
-            .push(i);
-    }
-    map
 }
 
 fn module_entry_ids(
@@ -450,7 +439,7 @@ fn strref_mode(t: ResType) -> StrRefMode {
 fn seed_ids(
     index: &Index,
     known: &HashSet<String>,
-    by_resref: &HashMap<String, Vec<u32>>,
+    winners: &HashMap<(Scope, String, ResType), u32>,
     module_entries: &HashMap<String, Vec<u32>>,
 ) -> (Vec<String>, Vec<u32>) {
     let mut labels = Vec::new();
@@ -458,9 +447,10 @@ fn seed_ids(
 
     let push_resref = |name: &str, labels: &mut Vec<String>, ids: &mut Vec<u32>| {
         let name = name.to_ascii_lowercase();
-        if let Some(list) = by_resref.get(&name) {
+        let list = resolve_in_scope(index, winners, module_entries, &None, &name);
+        if !list.is_empty() {
             labels.push(name);
-            ids.extend(list.iter().copied());
+            ids.extend(list);
         }
     };
     let push_module = |name: &str, labels: &mut Vec<String>, ids: &mut Vec<u32>| {
@@ -525,9 +515,10 @@ fn seed_ids(
         RootKind::Capsule | RootKind::Folder | RootKind::File => {
             for r in &index.resources {
                 if matches!(r.restype.extension(), Some("ifo" | "are" | "git")) {
-                    if let Some(list) = by_resref.get(&r.resref) {
+                    let list = resolve_in_scope(index, winners, module_entries, &None, &r.resref);
+                    if !list.is_empty() {
                         labels.push(r.resref.clone());
-                        ids.extend(list.iter().copied());
+                        ids.extend(list);
                     }
                 }
             }
@@ -600,10 +591,54 @@ fn load_dialog_tlk(index: &Index) -> Result<Vec<TlkRow>> {
         .collect())
 }
 
+fn resolve_in_scope(
+    index: &Index,
+    winners: &HashMap<(Scope, String, ResType), u32>,
+    module_entries: &HashMap<String, Vec<u32>>,
+    scope: &Scope,
+    tok: &str,
+) -> Vec<u32> {
+    let mut out = Vec::new();
+    // Collect distinct restypes for this resref from the index.
+    let mut types: Vec<ResType> = index
+        .lookup(tok)
+        .iter()
+        .map(|&i| index.resources[i as usize].restype)
+        .collect();
+    types.sort_by_key(|t| t.0);
+    types.dedup();
+
+    for ty in types {
+        if let Some(&id) = winners.get(&(None, tok.to_string(), ty)) {
+            let kind = index.source(&index.resources[id as usize]).kind;
+            if kind == kq_index::SourceKind::Override {
+                out.push(id);
+                continue;
+            }
+        }
+        if let Some(m) = scope {
+            if let Some(&id) = winners.get(&(Some(m.clone()), tok.to_string(), ty)) {
+                out.push(id);
+                continue;
+            }
+        }
+        if let Some(&id) = winners.get(&(None, tok.to_string(), ty)) {
+            out.push(id);
+        }
+    }
+    if let Some(ids) = module_entries.get(tok) {
+        out.extend(ids.iter().copied());
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 fn bfs(
+    index: &Index,
     seeds: &[u32],
     edges: &HashMap<u32, HashSet<String>>,
-    by_resref: &HashMap<String, Vec<u32>>,
+    winners: &HashMap<(Scope, String, ResType), u32>,
     module_entries: &HashMap<String, Vec<u32>>,
 ) -> (HashSet<u32>, HashMap<u32, u32>) {
     let mut seen = HashSet::new();
@@ -615,24 +650,15 @@ fn bfs(
         }
     }
     while let Some(id) = q.pop_front() {
+        let scope = resource_scope(index, &index.resources[id as usize]);
         let Some(tokens) = edges.get(&id) else {
             continue;
         };
         for tok in tokens {
-            if let Some(ids) = by_resref.get(tok) {
-                for &j in ids {
-                    if seen.insert(j) {
-                        parent.insert(j, id);
-                        q.push_back(j);
-                    }
-                }
-            }
-            if let Some(ids) = module_entries.get(tok) {
-                for &j in ids {
-                    if seen.insert(j) {
-                        parent.insert(j, id);
-                        q.push_back(j);
-                    }
+            for j in resolve_in_scope(index, winners, module_entries, &scope, tok) {
+                if seen.insert(j) {
+                    parent.insert(j, id);
+                    q.push_back(j);
                 }
             }
         }
@@ -848,9 +874,7 @@ mod tests {
         assert!(module_entries.contains_key("ebo_m40ad"));
 
         let catalog: HashSet<String> = index.resources.iter().map(|r| r.resref.clone()).collect();
-        let winners: Vec<u32> = winners_map.values().copied().collect();
-        let by_resref = winners_by_resref(&index, &winners);
-        let (labels, ids) = seed_ids(&index, &catalog, &by_resref, &module_entries);
+        let (labels, ids) = seed_ids(&index, &catalog, &winners_map, &module_entries);
         assert!(
             labels.iter().any(|s| s == "ebo_m40ad"),
             "labels={labels:?}"
@@ -922,37 +946,200 @@ mod tests {
 
     #[test]
     fn isolated_cycle_is_not_reachable() {
+        use serde_json::json;
+        let ncs = ResType::from_extension("ncs").unwrap().0;
+        let mut index: Index = serde_json::from_value(json!({
+            "schema": 3,
+            "root": "/game",
+            "kind": "install",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": ["/game/data/scripts.bif"],
+            "sources": [
+                {"kind":"chitin","label":"scripts.bif","precedence":700,"module_root":null}
+            ],
+            "resources": [
+                {"resref":"seed","restype":ncs,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"dead_a","restype":ncs,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"dead_b","restype":ncs,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"n_endsol01","restype":ncs,"file":0,"offset":0,"size":1,"source":0}
+            ],
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+        let winners = scoped_winners(&index);
+        let module_entries = HashMap::new();
         let mut edges = HashMap::new();
         edges.insert(1, HashSet::from(["dead_b".into()]));
         edges.insert(2, HashSet::from(["dead_a".into()]));
-        edges.insert(10, HashSet::from(["n_endsol01".into()]));
-        let mut by_resref = HashMap::new();
-        by_resref.insert("dead_a".into(), vec![1]);
-        by_resref.insert("dead_b".into(), vec![2]);
-        by_resref.insert("n_endsol01".into(), vec![11]);
-        let (seen, _parent) = bfs(&[10], &edges, &by_resref, &HashMap::new());
-        assert!(seen.contains(&10));
-        assert!(seen.contains(&11));
+        edges.insert(0, HashSet::from(["n_endsol01".into()]));
+        let (seen, _parent) = bfs(&index, &[0], &edges, &winners, &module_entries);
+        assert!(seen.contains(&0));
+        assert!(seen.contains(&3));
         assert!(!seen.contains(&1));
         assert!(!seen.contains(&2));
     }
 
     #[test]
     fn module_folder_enters_git_not_shared_ifo_name() {
-        // end_m01aa is a folder. The GIT is m01aa.git (id 20). Every module
-        // also has a module.ifo; only this module's ifo (id 21) is an entry.
+        use serde_json::json;
+        let git = ResType::from_extension("git").unwrap().0;
+        let ifo = ResType::from_extension("ifo").unwrap().0;
+        let utc = ResType::from_extension("utc").unwrap().0;
+        let mut index: Index = serde_json::from_value(json!({
+            "schema": 3,
+            "root": "/game",
+            "kind": "install",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": [
+                "/game/modules/end_m01aa.mod",
+                "/game/modules/other.mod"
+            ],
+            "sources": [
+                {"kind":"module-mod","label":"end_m01aa.mod","precedence":100,"module_root":"end_m01aa"},
+                {"kind":"module-mod","label":"other.mod","precedence":100,"module_root":"other"}
+            ],
+            "resources": [
+                {"resref":"m01aa","restype":git,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"module","restype":ifo,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"end_trask","restype":utc,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"other_mod_utc","restype":utc,"file":1,"offset":0,"size":1,"source":1},
+                {"resref":"orphan","restype":utc,"file":1,"offset":0,"size":1,"source":1}
+            ],
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+        let winners = scoped_winners(&index);
+        let module_entries = module_entry_ids(&index, &winners);
         let mut edges = HashMap::new();
-        edges.insert(20, HashSet::from(["end_trask".into()]));
-        edges.insert(99, HashSet::from(["other_mod_utc".into()]));
-        let mut by_resref = HashMap::new();
-        by_resref.insert("end_trask".into(), vec![30]);
-        by_resref.insert("other_mod_utc".into(), vec![31]);
-        let mut module_entries = HashMap::new();
-        module_entries.insert("end_m01aa".into(), vec![20, 21]);
-        let (seen, _parent) = bfs(&[20, 21], &edges, &by_resref, &module_entries);
-        assert!(seen.contains(&30));
-        assert!(!seen.contains(&31));
-        assert!(!seen.contains(&99));
+        edges.insert(0, HashSet::from(["end_trask".into()]));
+        edges.insert(4, HashSet::from(["other_mod_utc".into()]));
+        let seeds = module_entries.get("end_m01aa").cloned().unwrap_or_default();
+        let (seen, _parent) = bfs(&index, &seeds, &edges, &winners, &module_entries);
+        assert!(seen.contains(&2)); // end_trask
+        assert!(!seen.contains(&3)); // other_mod_utc
+        assert!(!seen.contains(&4)); // orphan
+    }
+
+    fn fixture_end_and_m12() -> Index {
+        use serde_json::json;
+        let ifo = ResType::from_extension("ifo").unwrap().0;
+        let ncs = ResType::from_extension("ncs").unwrap().0;
+        let mut index: Index = serde_json::from_value(json!({
+            "schema": 3,
+            "root": "/game",
+            "kind": "install",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": [
+                "/game/modules/end_m01aa.mod",
+                "/game/modules/M12ab.mod"
+            ],
+            "sources": [
+                {"kind":"module-mod","label":"end_m01aa.mod","precedence":100,"module_root":"end_m01aa"},
+                {"kind":"module-mod","label":"M12ab.mod","precedence":100,"module_root":"m12ab"}
+            ],
+            "resources": [
+                {"resref":"module","restype":ifo,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"module","restype":ifo,"file":1,"offset":0,"size":1,"source":1},
+                {"resref":"k_pend_activate","restype":ncs,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"k_pend_activate","restype":ncs,"file":1,"offset":0,"size":1,"source":1}
+            ],
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+        index
+    }
+
+    fn fixture_tar_rndtalk() -> Index {
+        use serde_json::json;
+        let dlg = ResType::from_extension("dlg").unwrap().0;
+        let ncs = ResType::from_extension("ncs").unwrap().0;
+        let mut index: Index = serde_json::from_value(json!({
+            "schema": 3,
+            "root": "/game",
+            "kind": "install",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": [
+                "/game/modules/tar_m03aa.mod",
+                "/game/modules/tar_m02aa.mod"
+            ],
+            "sources": [
+                {"kind":"module-mod","label":"tar_m03aa.mod","precedence":100,"module_root":"tar_m03aa"},
+                {"kind":"module-mod","label":"tar_m02aa.mod","precedence":100,"module_root":"tar_m02aa"}
+            ],
+            "resources": [
+                {"resref":"tar03_citizen","restype":dlg,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"k_ptar_rndtalk0","restype":ncs,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"k_ptar_rndtalk0","restype":ncs,"file":1,"offset":0,"size":1,"source":1}
+            ],
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+        index
+    }
+
+    #[test]
+    fn bfs_case1_ifo_script_in_starting_module() {
+        let index = fixture_end_and_m12();
+        let winners = scoped_winners(&index);
+        let module_entries = module_entry_ids(&index, &winners);
+        let ifo_id = *winners
+            .get(&(Some("end_m01aa".into()), "module".into(), ResType::from_extension("ifo").unwrap()))
+            .unwrap();
+        let mut edges = HashMap::new();
+        edges.insert(ifo_id, HashSet::from(["k_pend_activate".into()]));
+        let (seen, parent) = bfs(&index, &[ifo_id], &edges, &winners, &module_entries);
+        let ncs = ResType::from_extension("ncs").unwrap();
+        let want = *winners
+            .get(&(Some("end_m01aa".into()), "k_pend_activate".into(), ncs))
+            .unwrap();
+        let foreign = *winners
+            .get(&(Some("m12ab".into()), "k_pend_activate".into(), ncs))
+            .unwrap();
+        assert!(seen.contains(&want));
+        assert!(!seen.contains(&foreign));
+        assert_eq!(parent.get(&want), Some(&ifo_id));
+    }
+
+    #[test]
+    fn bfs_case5_seed_module_with_colliding_are() {
+        let index = fixture_two_modules_shared_are();
+        let winners = scoped_winners(&index);
+        let module_entries = module_entry_ids(&index, &winners);
+        let seeds = module_entries.get("ebo_m40ad").cloned().unwrap_or_default();
+        assert!(!seeds.is_empty());
+        let (seen, _) = bfs(&index, &seeds, &HashMap::new(), &winners, &module_entries);
+        assert!(seeds.iter().all(|id| seen.contains(id)));
+    }
+
+    #[test]
+    fn bfs_case7_dlg_resolves_same_module_script_not_foreign_winner() {
+        let index = fixture_tar_rndtalk();
+        let winners = scoped_winners(&index);
+        let module_entries = module_entry_ids(&index, &winners);
+        let dlg_ty = ResType::from_extension("dlg").unwrap();
+        let dlg = *winners
+            .get(&(Some("tar_m03aa".into()), "tar03_citizen".into(), dlg_ty))
+            .unwrap();
+        let mut edges = HashMap::new();
+        edges.insert(dlg, HashSet::from(["k_ptar_rndtalk0".into()]));
+        let (seen, _) = bfs(&index, &[dlg], &edges, &winners, &module_entries);
+        let ncs = ResType::from_extension("ncs").unwrap();
+        let local = *winners
+            .get(&(Some("tar_m03aa".into()), "k_ptar_rndtalk0".into(), ncs))
+            .unwrap();
+        let foreign = *winners
+            .get(&(Some("tar_m02aa".into()), "k_ptar_rndtalk0".into(), ncs))
+            .unwrap();
+        assert!(seen.contains(&local));
+        assert!(!seen.contains(&foreign));
     }
 
     #[test]
