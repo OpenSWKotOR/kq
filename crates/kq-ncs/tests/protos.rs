@@ -56,6 +56,33 @@ fn void_two_params() {
 }
 
 #[test]
+fn binary_expression_arg_does_not_imply_int_return() {
+    let mut ins = asm(&[
+        ("JSR", vec![JumpAbs(0)]),
+        ("RETN", vec![]),
+        ("CONSTI", vec![Int(1)]),
+        ("CONSTI", vec![Int(2)]),
+        ("ADDII", vec![]),
+        ("JSR", vec![JumpAbs(0)]),
+        ("RETN", vec![]),
+        ("MOVSP", vec![Int(-4)]),
+        ("RETN", vec![]),
+    ]);
+    jump(&mut ins, 0, 2);
+    jump(&mut ins, 5, 7);
+
+    let (infos, warnings) = infer(&ins);
+    let sub = &infos[&SubId::User(1)];
+    assert_eq!(sub.param_count, 1);
+    assert_eq!(sub.ret, Ty::Void);
+    assert!(!warnings.iter().any(|warning| {
+        warning.sub == Some(1)
+            && warning.msg.contains("unresolved return")
+            && warning.msg.contains("int")
+    }));
+}
+
+#[test]
 fn int_return_one_param() {
     let mut ins = asm(&[
         ("JSR", vec![JumpAbs(0)]),

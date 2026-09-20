@@ -403,6 +403,10 @@ fn apply(
     game: Game,
 ) {
     let inst = &ins[i];
+    if let Some(effect) = typed_stack_effect(inst) {
+        apply_typed_stack_effect(stack, effect);
+        return;
+    }
     match inst.op {
         "MOVSP" => {
             let popped = stack_offset_to_pos(arg_int(inst, 0));
@@ -488,33 +492,71 @@ fn apply(
                 walk.param_seen.insert(depth);
             }
         }
+        _ => {}
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TypedStackEffect {
+    pops: usize,
+    pushes: usize,
+    result: Ty,
+    preserve: bool,
+}
+
+fn typed_stack_effect(inst: &Instruction) -> Option<TypedStackEffect> {
+    let effect = match inst.op {
         "EQUALTT" | "NEQUALTT" => {
             let slots = stack_size_to_pos(arg_int(inst, 0)).max(1);
-            pop_n(stack, 2 * slots);
-            stack.push(Slot::new(Ty::Int));
-        }
-        "ADDVV" | "SUBVV" => {
-            pop_n(stack, 6);
-            for _ in 0..3 {
-                stack.push(Slot::new(Ty::Float));
+            TypedStackEffect {
+                pops: 2 * slots,
+                pushes: 1,
+                result: Ty::Int,
+                preserve: false,
             }
         }
-        "MULVF" | "DIVVF" | "MULFV" | "DIVFV" => {
-            pop_n(stack, 4);
-            for _ in 0..3 {
-                stack.push(Slot::new(Ty::Float));
-            }
-        }
-        op if ty_from_op(op).is_some() => {
-            stack.push(Slot::new(ty_from_op(op).unwrap()));
-        }
-        op if is_unary(op) => {}
-        op if is_binary(op) => {
-            let ret = binary_ret(op);
-            pop_n(stack, 2);
-            stack.push(Slot::new(ret));
-        }
-        _ => {}
+        "ADDVV" | "SUBVV" => TypedStackEffect {
+            pops: 6,
+            pushes: 3,
+            result: Ty::Float,
+            preserve: false,
+        },
+        "MULVF" | "DIVVF" | "MULFV" | "DIVFV" => TypedStackEffect {
+            pops: 4,
+            pushes: 3,
+            result: Ty::Float,
+            preserve: false,
+        },
+        op if ty_from_op(op).is_some() => TypedStackEffect {
+            pops: 0,
+            pushes: 1,
+            result: ty_from_op(op).unwrap(),
+            preserve: false,
+        },
+        op if is_unary(op) => TypedStackEffect {
+            pops: 1,
+            pushes: 1,
+            result: Ty::Unknown,
+            preserve: true,
+        },
+        op if is_binary(op) => TypedStackEffect {
+            pops: 2,
+            pushes: 1,
+            result: binary_ret(op),
+            preserve: false,
+        },
+        _ => return None,
+    };
+    Some(effect)
+}
+
+fn apply_typed_stack_effect(stack: &mut Vec<Slot>, effect: TypedStackEffect) {
+    if effect.preserve {
+        return;
+    }
+    pop_n(stack, effect.pops);
+    for _ in 0..effect.pushes {
+        stack.push(Slot::new(effect.result));
     }
 }
 
@@ -682,30 +724,33 @@ fn call_site_estimates(
             }
             let mut growth = growth_at.get(&i).copied().unwrap_or(0);
             let inst = &ins[i];
-            match inst.op {
-                op if ty_from_op(op).is_some() => growth += 1,
-                "CPTOPSP" | "CPTOPBP" => {
-                    growth += stack_size_to_pos(arg_int(inst, 1));
-                }
-                "MOVSP" | "DESTRUCT" => growth = 0,
-                "JMP" => {
-                    if arg_jump(inst).is_some_and(|t| t < inst.offset) {
-                        growth = 0;
+            if let Some(effect) = typed_stack_effect(inst) {
+                growth = growth.saturating_sub(effect.pops) + effect.pushes;
+            } else {
+                match inst.op {
+                    "CPTOPSP" | "CPTOPBP" => {
+                        growth += stack_size_to_pos(arg_int(inst, 1));
                     }
-                }
-                "JZ" | "JNZ" => growth = growth.saturating_sub(1),
-                "JSR" => {
-                    if let Some(t) = arg_jump(inst) {
-                        if let Some(&callee) = by_pos.get(&t) {
-                            let entry = est.entry(callee).or_default();
-                            entry.max_growth = entry.max_growth.max(growth);
-                            entry.calls += 1;
+                    "MOVSP" | "DESTRUCT" => growth = 0,
+                    "JMP" => {
+                        if arg_jump(inst).is_some_and(|t| t < inst.offset) {
+                            growth = 0;
                         }
                     }
-                    growth = 0;
+                    "JZ" | "JNZ" => growth = growth.saturating_sub(1),
+                    "JSR" => {
+                        if let Some(t) = arg_jump(inst) {
+                            if let Some(&callee) = by_pos.get(&t) {
+                                let entry = est.entry(callee).or_default();
+                                entry.max_growth = entry.max_growth.max(growth);
+                                entry.calls += 1;
+                            }
+                        }
+                        growth = 0;
+                    }
+                    "ACTION" => growth = 0,
+                    _ => {}
                 }
-                "ACTION" => growth = 0,
-                _ => {}
             }
             let succs: Vec<usize> = cfg
                 .map(|c| c.succ.get(i).cloned().unwrap_or_default())
