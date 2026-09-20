@@ -2,15 +2,19 @@
 
 mod actions;
 mod actions_gen;
+mod ast;
 mod cfg;
 mod fallback;
+mod names;
 mod protos;
 mod split;
 mod stack;
 mod ty;
 
+pub use ast::{BinOp, Block, ElseArm, Expr, Stmt, SwitchCase, UnaryOp};
 pub use cfg::{analyze, BlockEnd, Cfg};
 pub use kq_index::Game;
+pub use names::{name_from_action, NameGen};
 pub use protos::{infer_prototypes, SubInfo};
 pub use split::{split, DeferredRegion, SplitError, SplitProgram, SubKind, SubRange};
 pub use stack::{
