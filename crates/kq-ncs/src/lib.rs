@@ -1,6 +1,9 @@
 //! NCS → NSS decompiler (DeNCS algorithm port).
 
+mod actions;
+mod actions_gen;
 mod fallback;
+mod ty;
 
 pub use kq_index::Game;
 
@@ -102,8 +105,8 @@ mod tests {
         data.push(0x42);
         let body = [
             0x1E, 0x00, 0x00, 0x00, 0x00, 0x08, // JSR +8 → offset 21
-            0x20, 0x00,                         // RETN header
-            0x20, 0x00,                         // RETN main
+            0x20, 0x00, // RETN header
+            0x20, 0x00, // RETN main
         ];
         let size = (13 + body.len()) as u32;
         data.extend_from_slice(&size.to_be_bytes());
