@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/kq-format", "crates/kq-index", "crates/kq-cli"]
+members = ["crates/kq-format", "crates/kq-index", "crates/kq-cli", "crates/kq-ncs"]
 
 [workspace.package]
 version = "0.1.0"

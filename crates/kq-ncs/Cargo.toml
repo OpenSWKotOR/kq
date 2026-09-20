@@ -1,0 +1,12 @@
+[package]
+name = "kq-ncs"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "NCS → NSS decompiler (DeNCS algorithm port)."
+
+[dependencies]
+kq-format = { path = "../kq-format" }
+kq-index = { path = "../kq-index" }
+kotor-ncs-isa = { workspace = true }
