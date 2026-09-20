@@ -9,9 +9,16 @@ use anyhow::Result;
 use serde_json::Value as J;
 
 use kq_format::{bwm, gff, lip, ltr, mdl, ncs, ssf, text, tlk, tpc, twoda, wav, ResType};
-use kq_index::{Index, Resource};
+use kq_index::{Game, Index, Resource};
 
 use crate::read;
+
+/// Whether NCS should stay bytecode (`On`) or become decompiled NSS (`Off`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisasmMode {
+    Off,
+    On,
+}
 
 /// How to print a decoded resource.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -27,6 +34,7 @@ pub enum Format {
 }
 
 /// What a resource decoded into.
+#[derive(Debug)]
 pub enum Decoded {
     /// A structured value: GFF tree, 2DA rows, TLK entries.
     Value(J),
@@ -38,8 +46,25 @@ pub enum Decoded {
 
 /// Decode a resource from the index, pairing binary MDL with its MDX companion.
 pub fn decode_resource(index: &Index, r: &Resource, bytes: &[u8]) -> Result<Decoded> {
+    decode_resource_mode(index, r, bytes, DisasmMode::Off)
+}
+
+/// Decode a resource, choosing NCS NSS vs instruction tree.
+pub fn decode_resource_mode(
+    index: &Index,
+    r: &Resource,
+    bytes: &[u8],
+    disasm: DisasmMode,
+) -> Result<Decoded> {
     let mdx = companion_mdx(index, r);
-    decode_ex(bytes, mdx.as_deref(), Some(r.restype), &r.filename())
+    decode_ex(
+        bytes,
+        mdx.as_deref(),
+        Some(r.restype),
+        &r.filename(),
+        index.game,
+        disasm,
+    )
 }
 
 fn companion_mdx(index: &Index, r: &Resource) -> Option<Vec<u8>> {
@@ -62,7 +87,7 @@ fn companion_mdx(index: &Index, r: &Resource) -> Option<Vec<u8>> {
 /// Decode a resource. `restype` is a hint used only when sniffing is
 /// inconclusive.
 pub fn decode(bytes: &[u8], restype: Option<ResType>, name: &str) -> Result<Decoded> {
-    decode_ex(bytes, None, restype, name)
+    decode_ex(bytes, None, restype, name, Game::K1, DisasmMode::Off)
 }
 
 pub fn decode_with_mdx(
@@ -71,7 +96,7 @@ pub fn decode_with_mdx(
     restype: Option<ResType>,
     name: &str,
 ) -> Result<Decoded> {
-    decode_ex(bytes, mdx, restype, name)
+    decode_ex(bytes, mdx, restype, name, Game::K1, DisasmMode::Off)
 }
 
 fn decode_ex(
@@ -79,6 +104,8 @@ fn decode_ex(
     mdx: Option<&[u8]>,
     restype: Option<ResType>,
     name: &str,
+    game: Game,
+    disasm: DisasmMode,
 ) -> Result<Decoded> {
     let path = std::path::Path::new(name);
 
@@ -103,8 +130,17 @@ fn decode_ex(
         return Ok(Decoded::Value(text::lip_to_json(&l)));
     }
     if ncs::sniff(bytes) {
-        let n = ncs::read(bytes, path)?;
-        return Ok(Decoded::Value(text::ncs_to_json(&n)));
+        let n = match ncs::read(bytes, path) {
+            Ok(n) => n,
+            Err(e) => {
+                return Ok(Decoded::Text(format!("/* kq: not a valid NCS: {e} */\n")));
+            }
+        };
+        if disasm == DisasmMode::On {
+            return Ok(Decoded::Value(text::ncs_to_json(&n)));
+        }
+        let d = kq_ncs::decompile(&n, game);
+        return Ok(Decoded::Text(d.source));
     }
     if bwm::sniff(bytes) {
         let w = bwm::read(bytes, path)?;
@@ -228,4 +264,55 @@ fn decode_cp1252(bytes: &[u8]) -> String {
 /// bytes instead of a one-line placeholder that can never match.
 pub fn raw_as_text(bytes: &[u8]) -> String {
     decode_cp1252(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minimal_ncs_bytes() -> Vec<u8> {
+        // NCS V1.0 + magic + size, then: JSR ->21, RETN, RETN (empty main)
+        let mut data = b"NCS V1.0".to_vec();
+        data.push(0x42);
+        let body = [
+            0x1E, 0x00, 0x00, 0x00, 0x00, 0x08, // JSR +8 → offset 21
+            0x20, 0x00, // RETN header
+            0x20, 0x00, // RETN main
+        ];
+        let size = (13 + body.len()) as u32;
+        data.extend_from_slice(&size.to_be_bytes());
+        data.extend_from_slice(&body);
+        data
+    }
+
+    #[test]
+    fn cat_ncs_defaults_to_nss_text() {
+        let bytes = minimal_ncs_bytes();
+        let ncs = ResType::from_extension("ncs");
+        let decoded = decode_ex(
+            &bytes,
+            None,
+            ncs,
+            "t.ncs",
+            Game::K1,
+            DisasmMode::Off,
+        )
+        .unwrap();
+        match decoded {
+            Decoded::Text(s) => {
+                assert!(s.contains("StartingConditional") || s.contains("main") || s.contains("/*"))
+            }
+            other => panic!("expected Text, got non-text: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cat_ncs_disasm_is_instruction_json_value() {
+        let bytes = minimal_ncs_bytes();
+        let decoded = decode_ex(&bytes, None, None, "t.ncs", Game::K1, DisasmMode::On).unwrap();
+        match decoded {
+            Decoded::Value(v) => assert!(v.get("instructions").is_some()),
+            _ => panic!("expected Value"),
+        }
+    }
 }

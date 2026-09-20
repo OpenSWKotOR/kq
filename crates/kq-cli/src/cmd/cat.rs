@@ -8,7 +8,7 @@ use anyhow::{bail, Result};
 use kq_format::{gff, ResType};
 use kq_index::{Index, Resource};
 
-use crate::render::{self, Format};
+use crate::render::{self, DisasmMode, Format};
 use crate::resource_json;
 use crate::{exit, read, Ctx};
 
@@ -35,6 +35,10 @@ pub struct Args {
     /// Write the resource's exact bytes. Same as `--format raw`.
     #[arg(long)]
     raw: bool,
+
+    /// Show NCS instruction disassembly instead of decompiled NSS.
+    #[arg(long)]
+    disasm: bool,
 
     /// Read from a container label or an existing resource/archive file path.
     /// A file path does not require an installation.
@@ -132,7 +136,12 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         return Ok(exit::OK);
     }
 
-    let decoded = render::decode_resource(&index, resource, &bytes)?;
+    let disasm = if args.disasm || format == Format::Json {
+        DisasmMode::On
+    } else {
+        DisasmMode::Off
+    };
+    let decoded = render::decode_resource_mode(&index, resource, &bytes, disasm)?;
 
     if format == Format::Json {
         let report = resource_json::build_resource_json(&index, resource, &decoded);

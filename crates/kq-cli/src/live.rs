@@ -306,7 +306,14 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
                 continue;
             }
             let owned = bytes.to_vec();
-            let Ok(decoded) = render::decode_resource(index, r, &owned) else {
+            // Keep unused/graph on CONSTS. Default NCS decode is NSS text;
+            // tokenizing that would invent identifier edges.
+            let disasm = if r.restype.extension() == Some("ncs") {
+                render::DisasmMode::On
+            } else {
+                render::DisasmMode::Off
+            };
+            let Ok(decoded) = render::decode_resource_mode(index, r, &owned, disasm) else {
                 continue;
             };
             let mut mentions = HashSet::new();

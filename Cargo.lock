@@ -317,6 +317,7 @@ dependencies = [
  "clap",
  "kq-format",
  "kq-index",
+ "kq-ncs",
  "memmap2",
  "rayon",
  "regex",

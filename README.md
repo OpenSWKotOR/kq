@@ -312,7 +312,7 @@ A module in this index is the usual trio: `name.rim` + `name_s.rim` +
 | TLK | `tlk` | `strref` + `text` (+ `sound` when present) |
 | SSF | `ssf` | 28 named creature sound-event StrRefs |
 | LIP | `lip` | duration + mouth-shape keyframes |
-| NCS | `ncs` | disassembly: opcode, args, `GetObjectByTag`-style ACTION names |
+| NCS | `ncs` | decompiled NSS (DeNCS-equivalent); `--disasm` / `-f json` for the instruction tree |
 | LTR | `ltr` | single-letter name-generation probabilities |
 | BWM | `wok` `dwk` `pwk` | vertices, faces, materials, area-transition edges |
 | TPC | `tpc` | size, format, mipmaps, trailing TXI text (not pixels) |
@@ -327,9 +327,8 @@ TGA, DDS and other still-opaque types print
 `<type, N bytes, no text form yet>` unless you use `--raw` or
 `grep --include-binary`.
 
-NCS is a **disassembler**, not an NSS decompiler. Scripts become located
-instructions you can grep (`….instructions[123].name = "GetObjectByTag"`),
-not recovered source.
+NCS defaults to decompiled NSS. Use `kq cat --disasm` or `-f json` for the
+located instruction tree (`….instructions[123].name = "GetObjectByTag"`).
 
 ---
 
@@ -364,7 +363,6 @@ Broken pipes (`kq ls | head`) are silent success, not an error.
 ## What this is not
 
 - Not a writer. `kq` does not patch, compile, or pack archives.
-- Not a decompiler. NCS is disassembled; it is not turned back into NSS.
 - Not an image or audio exporter. TPC/WAV metadata only.
 - Not a Windows-only tool. It is an ordinary Rust CLI; it does not launch
   the game.

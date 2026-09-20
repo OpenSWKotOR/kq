@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 kq-format = { path = "../kq-format" }
 kq-index = { path = "../kq-index" }
+kq-ncs = { path = "../kq-ncs" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 rayon = { workspace = true }
