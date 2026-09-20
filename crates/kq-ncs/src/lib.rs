@@ -219,6 +219,7 @@ fn emit_function(
     globals: &GlobalTable,
     conditional_main: bool,
 ) {
+    let locals = name_locals(block);
     let (ret, name) = match id {
         SubId::Main if conditional_main => ("int", "StartingConditional".to_string()),
         SubId::Main => ("void", "main".to_string()),
@@ -238,32 +239,120 @@ fn emit_function(
         out.push_str(&format!("{}Param{}", ty_name(ty), i + 1));
     }
     out.push_str(") {\n");
-    emit_block(out, block, globals, 1);
+    emit_block(out, block, globals, &locals, 1);
     out.push_str("}\n");
 }
 
-fn emit_block(out: &mut String, block: &Block, globals: &GlobalTable, indent: usize) {
+fn name_locals(block: &Block) -> std::collections::HashMap<VarId, String> {
+    let mut ng = NameGen::default();
+    let mut names = std::collections::HashMap::new();
+    name_block(block, &mut ng, &mut names);
+    names
+}
+
+fn name_block(
+    block: &Block,
+    ng: &mut NameGen,
+    names: &mut std::collections::HashMap<VarId, String>,
+) {
     for stmt in &block.stmts {
-        emit_stmt(out, stmt, globals, indent);
+        name_stmt(stmt, ng, names);
     }
 }
 
-fn emit_stmt(out: &mut String, stmt: &Stmt, globals: &GlobalTable, indent: usize) {
+fn name_stmt(stmt: &Stmt, ng: &mut NameGen, names: &mut std::collections::HashMap<VarId, String>) {
+    match stmt {
+        Stmt::VarDecl { var, ty, init } => {
+            let mut var_rec = Var {
+                ty: *ty,
+                name: Some(ng.generic(ty)),
+                kind: VarKind::Local,
+                assigned: false,
+                on_stack: 0,
+                parent_struct: None,
+            };
+            if let Some(Expr::CallAction { name, args }) = init {
+                ng.apply_action_hint(&mut var_rec, name, args);
+            }
+            names.insert(*var, var_rec.name.unwrap());
+        }
+        Stmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            name_block(then_body, ng, names);
+            if let Some(arm) = else_body {
+                name_else(arm, ng, names);
+            }
+        }
+        Stmt::While { body, .. } | Stmt::DoWhile { body, .. } | Stmt::Block(body) => {
+            name_block(body, ng, names);
+        }
+        Stmt::Switch { cases, .. } => {
+            for case in cases {
+                name_block(&case.body, ng, names);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn name_else(
+    arm: &ElseArm,
+    ng: &mut NameGen,
+    names: &mut std::collections::HashMap<VarId, String>,
+) {
+    match arm {
+        ElseArm::Else(body) => name_block(body, ng, names),
+        ElseArm::ElseIf {
+            then_body,
+            else_body,
+            ..
+        } => {
+            name_block(then_body, ng, names);
+            if let Some(next) = else_body {
+                name_else(next, ng, names);
+            }
+        }
+    }
+}
+
+fn emit_block(
+    out: &mut String,
+    block: &Block,
+    globals: &GlobalTable,
+    locals: &std::collections::HashMap<VarId, String>,
+    indent: usize,
+) {
+    for stmt in &block.stmts {
+        emit_stmt(out, stmt, globals, locals, indent);
+    }
+}
+
+fn emit_stmt(
+    out: &mut String,
+    stmt: &Stmt,
+    globals: &GlobalTable,
+    locals: &std::collections::HashMap<VarId, String>,
+    indent: usize,
+) {
     let tabs = "\t".repeat(indent);
     match stmt {
-        Stmt::VarDecl { var, init } => {
+        Stmt::VarDecl { var, ty, init } => {
             out.push_str(&tabs);
-            out.push_str("int ");
-            out.push_str(&var_name(*var, globals));
+            out.push_str(ty_name(ty));
+            out.push(' ');
+            out.push_str(&var_name(*var, globals, locals));
             if let Some(expr) = init {
                 out.push_str(" = ");
-                emit_expr(out, expr, globals, 0);
+                emit_expr(out, expr, globals, locals, 0);
             }
             out.push_str(";\n");
         }
         Stmt::Expr(expr) => {
             out.push_str(&tabs);
-            emit_expr(out, expr, globals, 0);
+            emit_expr(out, expr, globals, locals, 0);
             out.push_str(";\n");
         }
         Stmt::Return(expr) => {
@@ -271,7 +360,7 @@ fn emit_stmt(out: &mut String, stmt: &Stmt, globals: &GlobalTable, indent: usize
             out.push_str("return");
             if let Some(expr) = expr {
                 out.push(' ');
-                emit_expr(out, expr, globals, 0);
+                emit_expr(out, expr, globals, locals, 0);
             }
             out.push_str(";\n");
         }
@@ -282,48 +371,73 @@ fn emit_stmt(out: &mut String, stmt: &Stmt, globals: &GlobalTable, indent: usize
         } => {
             out.push_str(&tabs);
             out.push_str("if (");
-            emit_expr(out, cond, globals, 0);
+            emit_expr(out, cond, globals, locals, 0);
             out.push_str(") {\n");
-            emit_block(out, then_body, globals, indent + 1);
+            emit_block(out, then_body, globals, locals, indent + 1);
             out.push_str(&tabs);
             out.push('}');
             if let Some(arm) = else_body {
-                emit_else(out, arm, globals, indent);
+                emit_else(out, arm, globals, locals, indent);
             } else {
                 out.push('\n');
             }
         }
-        Stmt::Block(body) => emit_block(out, body, globals, indent),
+        Stmt::Block(body) => emit_block(out, body, globals, locals, indent),
         Stmt::Break => out.push_str(&format!("{tabs}break;\n")),
         Stmt::Continue => out.push_str(&format!("{tabs}continue;\n")),
         Stmt::Comment(text) => out.push_str(&format!("{tabs}/* {text} */\n")),
         Stmt::While { cond, body } => {
             out.push_str(&tabs);
             out.push_str("while (");
-            emit_expr(out, cond, globals, 0);
+            emit_expr(out, cond, globals, locals, 0);
             out.push_str(") {\n");
-            emit_block(out, body, globals, indent + 1);
+            emit_block(out, body, globals, locals, indent + 1);
             out.push_str(&tabs);
             out.push_str("}\n");
         }
         Stmt::DoWhile { body, cond } => {
             out.push_str(&tabs);
             out.push_str("do {\n");
-            emit_block(out, body, globals, indent + 1);
+            emit_block(out, body, globals, locals, indent + 1);
             out.push_str(&tabs);
             out.push_str("} while (");
-            emit_expr(out, cond, globals, 0);
+            emit_expr(out, cond, globals, locals, 0);
             out.push_str(");\n");
         }
-        _ => out.push_str(&format!("{tabs}/* unsupported statement */\n")),
+        Stmt::Switch { sel, cases } => {
+            out.push_str(&tabs);
+            out.push_str("switch (");
+            emit_expr(out, sel, globals, locals, 0);
+            out.push_str(") {\n");
+            for case in cases {
+                out.push_str(&"\t".repeat(indent + 1));
+                match &case.value {
+                    Some(c) => {
+                        out.push_str("case ");
+                        emit_const(out, c);
+                        out.push_str(":\n");
+                    }
+                    None => out.push_str("default:\n"),
+                }
+                emit_block(out, &case.body, globals, locals, indent + 2);
+            }
+            out.push_str(&tabs);
+            out.push_str("}\n");
+        }
     }
 }
 
-fn emit_else(out: &mut String, arm: &ElseArm, globals: &GlobalTable, indent: usize) {
+fn emit_else(
+    out: &mut String,
+    arm: &ElseArm,
+    globals: &GlobalTable,
+    locals: &std::collections::HashMap<VarId, String>,
+    indent: usize,
+) {
     match arm {
         ElseArm::Else(body) => {
             out.push_str(" else {\n");
-            emit_block(out, body, globals, indent + 1);
+            emit_block(out, body, globals, locals, indent + 1);
             out.push_str(&"\t".repeat(indent));
             out.push_str("}\n");
         }
@@ -333,13 +447,13 @@ fn emit_else(out: &mut String, arm: &ElseArm, globals: &GlobalTable, indent: usi
             else_body,
         } => {
             out.push_str(" else if (");
-            emit_expr(out, cond, globals, 0);
+            emit_expr(out, cond, globals, locals, 0);
             out.push_str(") {\n");
-            emit_block(out, then_body, globals, indent + 1);
+            emit_block(out, then_body, globals, locals, indent + 1);
             out.push_str(&"\t".repeat(indent));
             out.push('}');
             if let Some(next) = else_body {
-                emit_else(out, next, globals, indent);
+                emit_else(out, next, globals, locals, indent);
             } else {
                 out.push('\n');
             }
@@ -347,27 +461,39 @@ fn emit_else(out: &mut String, arm: &ElseArm, globals: &GlobalTable, indent: usi
     }
 }
 
-fn emit_expr(out: &mut String, expr: &Expr, globals: &GlobalTable, parent_prec: u8) {
-    match expr {
-        Expr::Const(stack::Const::Int(v)) | Expr::Const(stack::Const::Object(v)) => {
-            out.push_str(&v.to_string())
-        }
-        Expr::Const(stack::Const::Float(v)) => out.push_str(&format!("{v:?}")),
-        Expr::Const(stack::Const::Str(v)) => {
+fn emit_const(out: &mut String, c: &stack::Const) {
+    match c {
+        stack::Const::Int(v) => out.push_str(&v.to_string()),
+        stack::Const::Object(0) => out.push_str("OBJECT_SELF"),
+        stack::Const::Object(v) => out.push_str(&v.to_string()),
+        stack::Const::Float(v) => out.push_str(&format!("{v:?}")),
+        stack::Const::Str(v) => {
             out.push('"');
-            for c in v.chars() {
-                match c {
+            for ch in v.chars() {
+                match ch {
                     '\\' => out.push_str("\\\\"),
                     '"' => out.push_str("\\\""),
                     '\n' => out.push_str("\\n"),
                     '\r' => out.push_str("\\r"),
                     '\t' => out.push_str("\\t"),
-                    _ => out.push(c),
+                    _ => out.push(ch),
                 }
             }
             out.push('"');
         }
-        Expr::Var(id) => out.push_str(&var_name(*id, globals)),
+    }
+}
+
+fn emit_expr(
+    out: &mut String,
+    expr: &Expr,
+    globals: &GlobalTable,
+    locals: &std::collections::HashMap<VarId, String>,
+    parent_prec: u8,
+) {
+    match expr {
+        Expr::Const(c) => emit_const(out, c),
+        Expr::Var(id) => out.push_str(&var_name(*id, globals, locals)),
         Expr::Unary { op, expr } => {
             out.push_str(match op {
                 UnaryOp::Neg => "-",
@@ -377,7 +503,7 @@ fn emit_expr(out: &mut String, expr: &Expr, globals: &GlobalTable, parent_prec: 
                 UnaryOp::PreDec => "--",
                 UnaryOp::PostInc | UnaryOp::PostDec => "",
             });
-            emit_expr(out, expr, globals, 13);
+            emit_expr(out, expr, globals, locals, 13);
             if matches!(op, UnaryOp::PostInc | UnaryOp::PostDec) {
                 out.push_str(if matches!(op, UnaryOp::PostInc) {
                     "++"
@@ -392,44 +518,58 @@ fn emit_expr(out: &mut String, expr: &Expr, globals: &GlobalTable, parent_prec: 
             if parens {
                 out.push('(');
             }
-            emit_expr(out, lhs, globals, prec);
+            emit_expr(out, lhs, globals, locals, prec);
             out.push(' ');
             out.push_str(bin_text(*op));
             out.push(' ');
-            emit_expr(out, rhs, globals, prec + 1);
+            emit_expr(out, rhs, globals, locals, prec + 1);
             if parens {
                 out.push(')');
             }
         }
         Expr::Assign { lhs, rhs } => {
-            emit_expr(out, lhs, globals, 1);
+            emit_expr(out, lhs, globals, locals, 1);
             out.push_str(" = ");
-            emit_expr(out, rhs, globals, 1);
+            emit_expr(out, rhs, globals, locals, 1);
         }
-        Expr::CallAction { name, args } => emit_call(out, name, args, globals),
-        Expr::CallSub { id, args } => emit_call(out, &format!("sub{id}"), args, globals),
+        Expr::CallAction { name, args } => emit_call(out, name, args, globals, locals),
+        Expr::CallSub { id, args } => emit_call(out, &format!("sub{id}"), args, globals, locals),
         Expr::Grouped(inner) => {
             out.push('(');
-            emit_expr(out, inner, globals, 0);
+            emit_expr(out, inner, globals, locals, 0);
             out.push(')');
         }
+        Expr::Deferred(inner) => match inner.as_ref() {
+            Stmt::Expr(e) => emit_expr(out, e, globals, locals, 0),
+            other => emit_stmt(out, other, globals, locals, 0),
+        },
         _ => out.push_str("/* unsupported expression */"),
     }
 }
 
-fn emit_call(out: &mut String, name: &str, args: &[Expr], globals: &GlobalTable) {
+fn emit_call(
+    out: &mut String,
+    name: &str,
+    args: &[Expr],
+    globals: &GlobalTable,
+    locals: &std::collections::HashMap<VarId, String>,
+) {
     out.push_str(name);
     out.push('(');
     for (i, arg) in args.iter().enumerate() {
         if i != 0 {
             out.push_str(", ");
         }
-        emit_expr(out, arg, globals, 0);
+        emit_expr(out, arg, globals, locals, 0);
     }
     out.push(')');
 }
 
-fn var_name(id: stack::VarId, globals: &GlobalTable) -> String {
+fn var_name(
+    id: stack::VarId,
+    globals: &GlobalTable,
+    locals: &std::collections::HashMap<VarId, String>,
+) -> String {
     if id.0 >= build::GLOBAL_BASE {
         globals
             .vars
@@ -437,7 +577,10 @@ fn var_name(id: stack::VarId, globals: &GlobalTable) -> String {
             .map(|v| v.name.clone())
             .unwrap_or_else(|| format!("global{}", id.0 - build::GLOBAL_BASE + 1))
     } else {
-        format!("int{}", id.0 + 1)
+        locals
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| format!("int{}", id.0 + 1))
     }
 }
 

@@ -1,11 +1,13 @@
 //! Statement and expression AST (research-dencs §5–9).
 
 use crate::stack::{Const, VarId};
+use crate::ty::Ty;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Stmt {
     VarDecl {
         var: VarId,
+        ty: Ty,
         init: Option<Expr>,
     },
     Expr(Expr),

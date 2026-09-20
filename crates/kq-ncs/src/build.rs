@@ -1,11 +1,11 @@
-//! Stack-to-AST build pass for expressions, `if`/`else`, and `while`/`do-while`.
+//! Stack-to-AST build pass for expressions, `if`/`else`, loops, switch, and deferred calls.
 
 use std::collections::HashMap;
 
 use kq_format::ncs::{Arg, Instruction};
 
 use crate::actions::action;
-use crate::ast::{BinOp, Block, ElseArm, Expr, Stmt, UnaryOp};
+use crate::ast::{BinOp, Block, ElseArm, Expr, Stmt, SwitchCase, UnaryOp};
 use crate::cfg::Cfg;
 use crate::globals::GlobalTable;
 use crate::stack::{stack_offset_to_pos, stack_size_to_pos, Const, VarId};
@@ -49,11 +49,21 @@ struct Builder<'a> {
     next_var: u32,
     /// After prefix `++`/`--`, the following `CPTOPSP`/`CPTOPBP` is the new value and is dropped (§6.5).
     suppress_next_copy: bool,
+    /// `STORE_STATE` results consumed as `Ty::Action` ACTION args (size 0, not stacked).
+    pending_deferred: Vec<Expr>,
+    /// Forward `JMP` to this index inside a switch case is `break`.
+    break_target: Option<usize>,
 }
 
 enum LoopKind {
     While { jz: usize, back: usize },
     DoWhile { jz: usize, back: usize },
+}
+
+struct SwitchPlan {
+    /// (case value or `None` = default, body start, body end)
+    arms: Vec<(Option<Const>, usize, usize)>,
+    end: usize,
 }
 
 pub fn build_sub(
@@ -73,6 +83,8 @@ pub fn build_sub(
         stack: Vec::new(),
         next_var: 0,
         suppress_next_copy: false,
+        pending_deferred: Vec::new(),
+        break_target: None,
     };
     builder.build_range(sub.range.start, sub.range.end)
 }
@@ -99,12 +111,13 @@ impl Builder<'_> {
             let inst = &self.ins[i];
             match inst.op {
                 op if op.starts_with("RSADD") => {
-                    let _ty = ty_from_rsadd(op).ok_or_else(|| self.unsupported(inst))?;
+                    let ty = ty_from_rsadd(op).ok_or_else(|| self.unsupported(inst))?;
                     let id = VarId(self.next_var);
                     self.next_var += 1;
                     self.stack.push(Value::Local(id));
                     block.stmts.push(Stmt::VarDecl {
                         var: id,
+                        ty,
                         init: None,
                     });
                 }
@@ -129,17 +142,26 @@ impl Builder<'_> {
                 "MOVSP" => self.movsp(inst, &mut block)?,
                 "INCxSP" | "DECxSP" => self.inc_sp(inst)?,
                 "INCxBP" | "DECxBP" => self.inc_bp(inst)?,
+                "STORE_STATE" => {
+                    self.build_store_state(i)?;
+                    i = jump_index(self.cfg, &self.ins[i + 1])?;
+                    continue;
+                }
                 "ACTION" => self.call_action(inst, &mut block)?,
                 "JSR" => self.call_sub(inst, &mut block)?,
                 op if binary_op(op).is_some() => self.binary(inst, binary_op(op).unwrap())?,
                 op if unary_op(op).is_some() => self.unary(inst, unary_op(op).unwrap())?,
-                "JZ" | "JNZ"
-                    if self.cfg.and_guards.contains(&i)
-                        || self.cfg.log_or_extra_jz.contains(&i) =>
-                {
+                "JZ" | "JNZ" if self.is_short_circuit_jz(i) => {
                     self.pop(inst)?;
                 }
                 "JZ" | "JNZ" => {
+                    if inst.op == "JNZ" {
+                        if let Some((stmt, next)) = self.try_switch(i, end)? {
+                            block.stmts.push(stmt);
+                            i = next;
+                            continue;
+                        }
+                    }
                     let mut cond = self.pop(inst)?.expr();
                     if inst.op == "JNZ" {
                         cond = Expr::Unary {
@@ -184,7 +206,14 @@ impl Builder<'_> {
                     i = next;
                     continue;
                 }
-                "JMP" | "RETN" | "SAVEBP" | "RESTOREBP" => {}
+                "JMP" => {
+                    if let Some(target) = self.break_target {
+                        if jump_index(self.cfg, inst)? == target {
+                            block.stmts.push(Stmt::Break);
+                        }
+                    }
+                }
+                "RETN" | "SAVEBP" | "RESTOREBP" => {}
                 op if op.starts_with("NOP") => {}
                 _ => return Err(self.unsupported(inst)),
             }
@@ -227,7 +256,10 @@ impl Builder<'_> {
             if self.ins[j].op != "JZ" {
                 continue;
             }
-            if self.cfg.and_guards.contains(&j) || self.cfg.log_or_extra_jz.contains(&j) {
+            if self.cfg.and_guards.contains(&j)
+                || self.cfg.log_or_extra_jz.contains(&j)
+                || self.is_or_guard_head(j)
+            {
                 continue;
             }
             let Ok(target) = jump_index(self.cfg, &self.ins[j]) else {
@@ -335,11 +367,10 @@ impl Builder<'_> {
         let dest = self.stack.len() - loc;
         let lhs = self.stack[dest].clone();
         if let Value::Local(id) = lhs {
-            if let Some(Stmt::VarDecl { var, init }) = block
-                .stmts
-                .iter_mut()
-                .rev()
-                .find(|stmt| matches!(stmt, Stmt::VarDecl { var, init: None } if *var == id))
+            if let Some(Stmt::VarDecl { var, init, .. }) =
+                block.stmts.iter_mut().rev().find(
+                    |stmt| matches!(stmt, Stmt::VarDecl { var, init: None, .. } if *var == id),
+                )
             {
                 if *var == id {
                     *init = Some(rhs);
@@ -446,8 +477,17 @@ impl Builder<'_> {
         let argc = inst.argc.unwrap_or(arg_i32(inst, 1)? as u8) as usize;
         let sig = action(self.game, id).ok_or_else(|| self.bad_operand(inst))?;
         let mut args = Vec::with_capacity(argc);
-        for _ in 0..argc {
-            args.push(self.pop(inst)?.expr());
+        for idx in 0..argc {
+            let is_action = sig.params.get(idx).is_some_and(|p| p.ty == Ty::Action);
+            if is_action {
+                args.push(
+                    self.pending_deferred
+                        .pop()
+                        .ok_or_else(|| self.bad_operand(inst))?,
+                );
+            } else {
+                args.push(self.pop(inst)?.expr());
+            }
         }
         let call = Expr::CallAction {
             name: sig.name.to_string(),
@@ -512,6 +552,184 @@ impl Builder<'_> {
         self.stack.pop().ok_or_else(|| self.underflow(inst))
     }
 
+    fn is_short_circuit_jz(&self, i: usize) -> bool {
+        self.cfg.and_guards.contains(&i)
+            || self.cfg.log_or_extra_jz.contains(&i)
+            || self.is_or_guard_head(i)
+    }
+
+    /// First `JZ` of `CPTOPSP -4 4; JZ; CPTOPSP -4 4; JZ` (§5.7). Extra JZ is `log_or_extra_jz`.
+    fn is_or_guard_head(&self, i: usize) -> bool {
+        if self.ins.get(i).is_none_or(|inst| inst.op != "JZ") {
+            return false;
+        }
+        matches!(
+            (self.ins.get(i + 1), self.ins.get(i + 2)),
+            (Some(copy), Some(jz2))
+                if is_cptopsp_dup(copy)
+                    && jz2.op == "JZ"
+                    && self.cfg.log_or_extra_jz.contains(&(i + 2))
+        )
+    }
+
+    fn build_store_state(&mut self, i: usize) -> Result<(), BuildError> {
+        let inst = &self.ins[i];
+        let region = self
+            .cfg
+            .deferred
+            .iter()
+            .find(|d| d.store_idx == i)
+            .cloned()
+            .ok_or_else(|| self.unsupported(inst))?;
+        if self.ins.get(i + 1).is_none_or(|j| j.op != "JMP") {
+            return Err(self.unsupported(inst));
+        }
+        let slots = stack_size_to_pos(arg_i32(inst, 1)?);
+        if slots > self.stack.len() {
+            return Err(self.underflow(inst));
+        }
+        let seed = self.stack[self.stack.len() - slots..].to_vec();
+        let saved_stack = std::mem::replace(&mut self.stack, seed);
+        let saved_pending = std::mem::take(&mut self.pending_deferred);
+        let saved_suppress = self.suppress_next_copy;
+        let saved_break = self.break_target;
+        self.suppress_next_copy = false;
+        self.break_target = None;
+        let body = self.build_range(region.body.start, region.body.end);
+        self.stack = saved_stack;
+        self.pending_deferred = saved_pending;
+        self.suppress_next_copy = saved_suppress;
+        self.break_target = saved_break;
+        let mut body = body?;
+        if body.stmts.len() != 1 {
+            return Err(self.unsupported(&self.ins[i]));
+        }
+        let stmt = body.stmts.pop().expect("len == 1");
+        self.pending_deferred.push(Expr::Deferred(Box::new(stmt)));
+        Ok(())
+    }
+
+    /// Selector-dup + `EQUAL`; `JNZ` chain + trailing `MOVSP -4` (§5.5). Else `Ok(None)` → if/else.
+    fn try_switch(&mut self, i: usize, end: usize) -> Result<Option<(Stmt, usize)>, BuildError> {
+        let Some(plan) = self.parse_switch(i, end) else {
+            return Ok(None);
+        };
+        let eq = self.pop_at(i)?;
+        let sel = match eq {
+            Expr::Binary {
+                op: BinOp::Eq, lhs, ..
+            } => *lhs,
+            other => other,
+        };
+        let stack = self.stack.clone();
+        let saved_break = self.break_target;
+        self.break_target = Some(plan.end);
+        let mut cases = Vec::new();
+        for (value, start, body_end) in plan.arms {
+            self.stack = stack.clone();
+            let body = self.build_range(start, body_end)?;
+            cases.push(SwitchCase { value, body });
+        }
+        self.break_target = saved_break;
+        self.stack = stack;
+        self.stack.pop().ok_or(BuildError::StackUnderflow {
+            pos: self.ins[i].offset,
+        })?;
+        Ok(Some((Stmt::Switch { sel, cases }, plan.end + 1)))
+    }
+
+    fn parse_switch(&self, first_jnz: usize, end: usize) -> Option<SwitchPlan> {
+        let mut j = first_jnz;
+        let mut cases: Vec<(Const, usize)> = Vec::new();
+        loop {
+            let value = self.dup_eq_jnz_const(j)?;
+            let target = jump_index(self.cfg, &self.ins[j]).ok()?;
+            if target <= j || target > end {
+                return None;
+            }
+            cases.push((value, target));
+            let next = j + 1;
+            if next < end && is_cptopsp_dup(&self.ins[next]) {
+                j = next + 3;
+                continue;
+            }
+            if next < end && self.ins[next].op == "JMP" {
+                let d = jump_index(self.cfg, &self.ins[next]).ok()?;
+                let body_lo = cases.iter().map(|(_, t)| *t).min()?;
+                let switch_end = self.find_switch_end(body_lo, end, d)?;
+                if !self.is_movsp_m4(switch_end) {
+                    return None;
+                }
+                let mut arms = Vec::new();
+                let mut starts: Vec<usize> = cases.iter().map(|(_, t)| *t).collect();
+                let has_default = !self.is_movsp_m4(d);
+                if has_default {
+                    starts.push(d);
+                }
+                starts.push(switch_end);
+                starts.sort_unstable();
+                starts.dedup();
+                for (value, start) in &cases {
+                    let body_end = starts.iter().copied().find(|s| *s > *start)?;
+                    arms.push((Some(value.clone()), *start, body_end));
+                }
+                if has_default {
+                    let body_end = starts.iter().copied().find(|s| s > &d)?;
+                    arms.push((None, d, body_end));
+                }
+                return Some(SwitchPlan {
+                    arms,
+                    end: switch_end,
+                });
+            }
+            return None;
+        }
+    }
+
+    fn dup_eq_jnz_const(&self, jnz: usize) -> Option<Const> {
+        if jnz < 3 || self.ins[jnz].op != "JNZ" {
+            return None;
+        }
+        if !is_cptopsp_dup(&self.ins[jnz - 3]) {
+            return None;
+        }
+        if self.ins[jnz - 2].op != "CONSTI" || !self.ins[jnz - 1].op.starts_with("EQUAL") {
+            return None;
+        }
+        match self.ins[jnz - 2].args.first() {
+            Some(Arg::Int(v)) => Some(Const::Int(*v as i32)),
+            _ => None,
+        }
+    }
+
+    fn find_switch_end(&self, body_lo: usize, range_end: usize, d: usize) -> Option<usize> {
+        if self.is_movsp_m4(d) {
+            return Some(d);
+        }
+        let mut found = None;
+        for k in body_lo..range_end {
+            if self.ins[k].op != "JMP" {
+                continue;
+            }
+            let Ok(t) = jump_index(self.cfg, &self.ins[k]) else {
+                continue;
+            };
+            if t <= k || t >= range_end {
+                continue;
+            }
+            if self.is_movsp_m4(t) {
+                found = Some(t);
+            }
+        }
+        found.or_else(|| (d..range_end).find(|&k| self.is_movsp_m4(k)))
+    }
+
+    fn is_movsp_m4(&self, i: usize) -> bool {
+        self.ins.get(i).is_some_and(|inst| {
+            inst.op == "MOVSP" && matches!(inst.args.first(), Some(Arg::Int(-4)))
+        })
+    }
+
     fn underflow(&self, inst: &Instruction) -> BuildError {
         BuildError::StackUnderflow { pos: inst.offset }
     }
@@ -530,6 +748,12 @@ impl Builder<'_> {
             op: inst.op.to_string(),
         }
     }
+}
+
+fn is_cptopsp_dup(inst: &Instruction) -> bool {
+    inst.op == "CPTOPSP"
+        && matches!(inst.args.first(), Some(Arg::Int(-4)))
+        && matches!(inst.args.get(1), Some(Arg::Int(4)))
 }
 
 fn values_same_var(a: &Value, b: &Value) -> bool {

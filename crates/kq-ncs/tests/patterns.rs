@@ -253,6 +253,152 @@ fn cfg_starting_conditional_dead_epilogue() {
 }
 
 #[test]
+fn golden_pman_comp08_full() {
+    // §9.4 (4) k_pman_comp08: while + AssignCommand STORE_STATE + i++.
+    // Offsets match the research dump (CONSTS "man28_turret02" is 14 bytes).
+    let ncs = asm_to_ncs(&[
+        ("JSR", vec![JumpAbs(21)]),
+        ("RETN", vec![]),
+        ("RSADDI", vec![]),
+        ("CONSTI", vec![Int(1)]),
+        ("CPDOWNSP", vec![Int(-8), Int(4)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("RSADDO", vec![]),
+        ("CPTOPSP", vec![Int(-8), Int(4)]),
+        ("CONSTO", vec![Int(0)]),
+        ("CONSTS", vec![Str("man28_turret02".into())]),
+        ("ACTION", vec![Int(229), Int(3)]),
+        ("CPDOWNSP", vec![Int(-8), Int(4)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("CPTOPSP", vec![Int(-4), Int(4)]),
+        ("ACTION", vec![Int(42), Int(1)]),
+        ("JZ", vec![JumpAbs(258)]),
+        ("CONSTI", vec![Int(1)]),
+        ("CPTOPSP", vec![Int(-8), Int(4)]),
+        ("ACTION", vec![Int(412), Int(2)]),
+        ("STORE_STATE", vec![Int(0), Int(8)]),
+        ("JMP", vec![JumpAbs(168)]),
+        ("CONSTI", vec![Int(0)]),
+        ("ACTION", vec![Int(548), Int(0)]),
+        ("ACTION", vec![Int(37), Int(2)]),
+        ("RETN", vec![]),
+        ("CPTOPSP", vec![Int(-4), Int(4)]),
+        ("ACTION", vec![Int(6), Int(2)]),
+        ("CPTOPSP", vec![Int(-8), Int(4)]),
+        ("INCxSP", vec![Int(-12)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("CPTOPSP", vec![Int(-8), Int(4)]),
+        ("CONSTO", vec![Int(0)]),
+        ("CONSTS", vec![Str("man28_turret02".into())]),
+        ("ACTION", vec![Int(229), Int(3)]),
+        ("CPDOWNSP", vec![Int(-8), Int(4)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("JMP", vec![JumpAbs(96)]),
+        ("MOVSP", vec![Int(-8)]),
+        ("RETN", vec![]),
+    ]);
+    let d = decompile(&ncs, Game::K1);
+    assert_eq!(
+        d.source.trim(),
+        "\
+void main() {
+	int int1 = 1;
+	object oNearestMan28_turret02 = GetNearestObjectByTag(\"man28_turret02\", OBJECT_SELF, int1);
+	while (GetIsObjectValid(oNearestMan28_turret02)) {
+		ChangeToStandardFaction(oNearestMan28_turret02, 1);
+		AssignCommand(oNearestMan28_turret02, ActionAttack(GetFirstPC(), 0));
+		int1++;
+		oNearestMan28_turret02 = GetNearestObjectByTag(\"man28_turret02\", OBJECT_SELF, int1);
+	}
+}"
+    );
+}
+
+#[test]
+fn golden_pdan_mand04_or() {
+    // §9.4 (5) k_pdan_mand04: || guard, GetGlobalNumber → nGlobal.
+    let ncs = asm_to_ncs(&[
+        ("RSADDI", vec![]),
+        ("JSR", vec![JumpAbs(23)]),
+        ("RETN", vec![]),
+        ("RSADDI", vec![]),
+        ("CONSTS", vec![Str("DAN_JON_STATE".into())]),
+        ("ACTION", vec![Int(580), Int(1)]),
+        ("CPDOWNSP", vec![Int(-8), Int(4)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("CPTOPSP", vec![Int(-4), Int(4)]),
+        ("CONSTI", vec![Int(0)]),
+        ("EQUALII", vec![]),
+        ("CPTOPSP", vec![Int(-4), Int(4)]),
+        ("JZ", vec![JumpAbs(105)]),
+        ("CPTOPSP", vec![Int(-4), Int(4)]),
+        ("JZ", vec![JumpAbs(121)]),
+        ("CPTOPSP", vec![Int(-8), Int(4)]),
+        ("CONSTI", vec![Int(1)]),
+        ("EQUALII", vec![]),
+        ("LOGORII", vec![]),
+        ("CPDOWNSP", vec![Int(-12), Int(4)]),
+        ("MOVSP", vec![Int(-8)]),
+        ("JMP", vec![JumpAbs(155)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("RETN", vec![]),
+    ]);
+    let d = decompile(&ncs, Game::K1);
+    assert_eq!(
+        d.source.trim(),
+        "\
+int StartingConditional() {
+	int nGlobal = GetGlobalNumber(\"DAN_JON_STATE\");
+	return nGlobal == 0 || nGlobal == 1;
+}"
+    );
+}
+
+#[test]
+fn switch_with_default() {
+    // §5.5: selector dup + JNZ cases + default + trailing MOVSP -4.
+    // JNZ@67→79 (case 1), JMP@73→96 (default), JMP@90→107 (break/END).
+    let ncs = asm_to_ncs(&[
+        ("JSR", vec![JumpAbs(21)]),
+        ("RETN", vec![]),
+        ("RSADDI", vec![]),
+        ("CONSTI", vec![Int(0)]),
+        ("CPDOWNSP", vec![Int(-8), Int(4)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("CPTOPSP", vec![Int(-4), Int(4)]),
+        ("CPTOPSP", vec![Int(-4), Int(4)]),
+        ("CONSTI", vec![Int(1)]),
+        ("EQUALII", vec![]),
+        ("JNZ", vec![JumpAbs(79)]),
+        ("JMP", vec![JumpAbs(96)]),
+        ("CONSTI", vec![Int(1)]),
+        ("ACTION", vec![Int(4), Int(1)]),
+        ("JMP", vec![JumpAbs(107)]),
+        ("CONSTI", vec![Int(2)]),
+        ("ACTION", vec![Int(4), Int(1)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("RETN", vec![]),
+    ]);
+    let d = decompile(&ncs, Game::K1);
+    assert_eq!(
+        d.source.trim(),
+        "\
+void main() {
+	int int1 = 0;
+	switch (int1) {
+		case 1:
+			PrintInteger(1);
+			break;
+		default:
+			PrintInteger(2);
+	}
+}"
+    );
+}
+
+#[test]
 fn cfg_log_or_extra_jz_from_mand04_shape() {
     let ins = asm(&[
         ("JSR", vec![JumpAbs(21)]),

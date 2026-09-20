@@ -36,11 +36,12 @@ pub fn analyze(ins: &[Instruction], sub: &SubRange, deferred: &[DeferredRegion])
         index_of.insert(inst.offset, i);
     }
 
-    let mut succ = vec![Vec::new(); n];
     let range = sub.range.clone();
+    let log_or_extra_jz = detect_log_or_extra_jz(ins, &range);
 
+    let mut succ = vec![Vec::new(); n];
     for i in range.clone() {
-        succ[i] = successors(ins, i, &range, &index_of);
+        succ[i] = successors(ins, i, &range, &index_of, &log_or_extra_jz);
     }
 
     let mut pred = vec![Vec::new(); n];
@@ -76,7 +77,6 @@ pub fn analyze(ins: &[Instruction], sub: &SubRange, deferred: &[DeferredRegion])
 
     let dead = mark_dead(n, range.start, &succ);
 
-    let log_or_extra_jz = detect_log_or_extra_jz(ins, &range);
     let and_guards = detect_and_guards(ins, &range, &index_of, &log_or_extra_jz);
     let block_ends = detect_block_ends(ins, &range, &index_of);
 
@@ -104,6 +104,7 @@ fn successors(
     i: usize,
     range: &std::ops::Range<usize>,
     index_of: &HashMap<u32, usize>,
+    log_or_extra_jz: &HashSet<usize>,
 ) -> Vec<usize> {
     let mut out = Vec::new();
     let fallthrough = i + 1;
@@ -116,7 +117,10 @@ fn successors(
             if in_sub(fallthrough) {
                 out.push(fallthrough);
             }
-            push_target(&mut out, ins, i, index_of);
+            // Extra || JZ is not a typing/CFG decision (§5.7); fall through to `b`.
+            if !log_or_extra_jz.contains(&i) {
+                push_target(&mut out, ins, i, index_of);
+            }
         }
         "STORE_STATE" => {
             if in_sub(fallthrough) {
