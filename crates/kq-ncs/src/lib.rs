@@ -5,6 +5,7 @@ mod actions_gen;
 mod ast;
 mod cfg;
 mod fallback;
+mod globals;
 mod names;
 mod protos;
 mod split;
@@ -13,6 +14,7 @@ mod ty;
 
 pub use ast::{BinOp, Block, ElseArm, Expr, Stmt, SwitchCase, UnaryOp};
 pub use cfg::{analyze, BlockEnd, Cfg};
+pub use globals::{build_globals, GlobalTable, GlobalVar, GlobalsError};
 pub use kq_index::Game;
 pub use names::{name_from_action, NameGen};
 pub use protos::{infer_prototypes, SubInfo};
