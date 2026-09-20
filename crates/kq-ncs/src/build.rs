@@ -7,9 +7,10 @@ use kq_format::ncs::{Arg, Instruction};
 use crate::actions::action;
 use crate::ast::{BinOp, Block, ElseArm, Expr, Stmt, SwitchCase, UnaryOp};
 use crate::cfg::Cfg;
+use crate::cleanup::VarTable;
 use crate::globals::GlobalTable;
-use crate::stack::{stack_offset_to_pos, stack_size_to_pos, Const, VarId};
-use crate::ty::Ty;
+use crate::stack::{stack_offset_to_pos, stack_size_to_pos, Const, Var, VarId, VarKind};
+use crate::ty::{StructTable, Ty};
 use crate::{Game, SubId, SubInfo};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,6 +48,9 @@ struct Builder<'a> {
     game: Game,
     stack: Vec<Value>,
     next_var: u32,
+    vars: VarTable,
+    /// Same table emit uses; intern happens here when build/stack structifies.
+    structs: StructTable,
     /// After prefix `++`/`--`, the following `CPTOPSP`/`CPTOPBP` is the new value and is dropped (§6.5).
     suppress_next_copy: bool,
     /// `STORE_STATE` results consumed as `Ty::Action` ACTION args (size 0, not stacked).
@@ -73,7 +77,7 @@ pub fn build_sub(
     globals: &GlobalTable,
     protos: &HashMap<SubId, SubInfo>,
     game: Game,
-) -> Result<Block, BuildError> {
+) -> Result<(Block, VarTable, StructTable), BuildError> {
     let mut builder = Builder {
         ins,
         cfg,
@@ -82,11 +86,14 @@ pub fn build_sub(
         game,
         stack: Vec::new(),
         next_var: 0,
+        vars: VarTable::new(),
+        structs: StructTable::new(),
         suppress_next_copy: false,
         pending_deferred: Vec::new(),
         break_target: None,
     };
-    builder.build_range(sub.range.start, sub.range.end)
+    let block = builder.build_range(sub.range.start, sub.range.end)?;
+    Ok((block, builder.vars, builder.structs))
 }
 
 impl Builder<'_> {
@@ -114,6 +121,17 @@ impl Builder<'_> {
                     let ty = ty_from_rsadd(op).ok_or_else(|| self.unsupported(inst))?;
                     let id = VarId(self.next_var);
                     self.next_var += 1;
+                    self.vars.insert(
+                        id,
+                        Var {
+                            ty,
+                            name: None,
+                            kind: VarKind::Local,
+                            assigned: false,
+                            on_stack: 1,
+                            parent_struct: None,
+                        },
+                    );
                     self.stack.push(Value::Local(id));
                     block.stmts.push(Stmt::VarDecl {
                         var: id,
@@ -872,5 +890,82 @@ fn binary_op(op: &str) -> Option<BinOp> {
         Some(BinOp::Mod)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::globals::GlobalTable;
+    use crate::{analyze, infer_prototypes, split, Game, SubId};
+    use kq_format::ncs::{Arg, Instruction};
+    use std::collections::HashMap;
+
+    #[derive(Clone)]
+    enum AsmArg {
+        JumpAbs(u32),
+        Int(i64),
+    }
+
+    fn asm(lines: &[(&str, Vec<AsmArg>)]) -> Vec<Instruction> {
+        let mut offset = 13u32;
+        let mut out = Vec::with_capacity(lines.len());
+        for (op, args) in lines {
+            let spec = kotor_ncs_isa::lookup_mnemonic(op)
+                .unwrap_or_else(|| panic!("unknown mnemonic {op}"));
+            let size = 2 + spec.operands.byte_len().expect("fixed-size op") as u32;
+            let mut ins = Instruction {
+                offset,
+                op: spec.mnemonic,
+                args: Vec::new(),
+                routine: None,
+                routine_name: None,
+                argc: None,
+            };
+            for arg in args {
+                match arg {
+                    AsmArg::JumpAbs(t) => ins.args.push(Arg::Jump(*t)),
+                    AsmArg::Int(v) => ins.args.push(Arg::Int(*v)),
+                }
+            }
+            out.push(ins);
+            offset += size;
+        }
+        out
+    }
+
+    fn build_main(ins: &[Instruction]) -> (Block, VarTable, StructTable) {
+        let program = split(ins).unwrap();
+        let cfg = analyze(ins, &program.main, &program.deferred);
+        let mut cfgs = HashMap::new();
+        cfgs.insert(SubId::Main, cfg);
+        let globals = GlobalTable { vars: Vec::new() };
+        let (protos, _) = infer_prototypes(ins, &program, &cfgs, Game::K1);
+        let info = protos.get(&SubId::Main).expect("main proto");
+        let cfg = cfgs.get(&SubId::Main).expect("main cfg");
+        build_sub(ins, info, cfg, &globals, &protos, Game::K1).unwrap()
+    }
+
+    #[test]
+    fn build_sub_collects_rsaddi_locals() {
+        let ins = asm(&[
+            ("JSR", vec![AsmArg::JumpAbs(21)]),
+            ("RETN", vec![]),
+            ("RSADDI", vec![]),
+            ("CONSTI", vec![AsmArg::Int(42)]),
+            ("CPDOWNSP", vec![AsmArg::Int(-8), AsmArg::Int(4)]),
+            ("MOVSP", vec![AsmArg::Int(-4)]),
+            ("RETN", vec![]),
+        ]);
+        let (_block, vars, structs) = build_main(&ins);
+        assert!(
+            !vars.is_empty(),
+            "RSADDI must produce a VarTable entry for cleanup"
+        );
+        assert_eq!(vars[&VarId(0)].ty, Ty::Int);
+        assert!(
+            structs.decls().next().is_none(),
+            "no struct intern yet; table still comes from build"
+        );
     }
 }

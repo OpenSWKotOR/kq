@@ -143,8 +143,19 @@ fn decl_var(stmt: &Stmt) -> Option<VarId> {
 mod tests {
     use super::*;
     use crate::ast::{Expr, Stmt};
-    use crate::stack::Const;
-    use crate::ty::Ty;
+    use crate::stack::{Const, VarKind};
+    use crate::ty::{StructId, Ty};
+
+    fn local(ty: Ty, parent: Option<VarId>) -> Var {
+        Var {
+            ty,
+            name: None,
+            kind: VarKind::Local,
+            assigned: false,
+            on_stack: 0,
+            parent_struct: parent,
+        }
+    }
 
     #[test]
     fn cleanup_merges_decl_assign() {
@@ -169,6 +180,49 @@ mod tests {
                 var: VarId(0),
                 ty: Ty::Int,
                 init: Some(Expr::Const(Const::Int(1))),
+            }]
+        );
+    }
+
+    #[test]
+    fn cleanup_collapses_struct_fields_only_with_vartable() {
+        let field_a = VarId(0);
+        let field_b = VarId(1);
+        let parent = VarId(10);
+        let field_decls = vec![
+            Stmt::VarDecl {
+                var: field_a,
+                ty: Ty::Int,
+                init: None,
+            },
+            Stmt::VarDecl {
+                var: field_b,
+                ty: Ty::Int,
+                init: None,
+            },
+        ];
+        let mut empty_block = Block {
+            stmts: field_decls.clone(),
+        };
+        let mut empty_vars = VarTable::new();
+        cleanup(&mut empty_block, &mut empty_vars);
+        assert_eq!(
+            empty_block.stmts, field_decls,
+            "empty VarTable cannot collapse field decls"
+        );
+
+        let mut vars = VarTable::new();
+        vars.insert(field_a, local(Ty::Int, Some(parent)));
+        vars.insert(field_b, local(Ty::Int, Some(parent)));
+        vars.insert(parent, local(Ty::Struct(StructId(0)), None));
+        let mut filled_block = Block { stmts: field_decls };
+        cleanup(&mut filled_block, &mut vars);
+        assert_eq!(
+            filled_block.stmts,
+            vec![Stmt::VarDecl {
+                var: parent,
+                ty: Ty::Struct(StructId(0)),
+                init: None,
             }]
         );
     }

@@ -148,6 +148,13 @@ impl StructTable {
     pub fn decls(&self) -> impl Iterator<Item = &StructDef> {
         self.defs.iter().filter(|d| !d.is_vector())
     }
+
+    /// Merge interned layouts from another table (same element list → same id).
+    pub fn absorb(&mut self, other: Self) {
+        for def in other.defs {
+            self.intern(def.elements);
+        }
+    }
 }
 
 fn field_names(elements: &[Ty]) -> Vec<String> {

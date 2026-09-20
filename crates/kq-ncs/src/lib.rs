@@ -121,6 +121,7 @@ fn decompile_inner(ncs: &kq_format::ncs::Ncs, game: Game) -> Decompiled {
 
     let mut items = Vec::new();
     let mut reports = Vec::new();
+    let mut structs: Option<StructTable> = None;
     let mut ranges = program
         .users
         .iter()
@@ -142,9 +143,12 @@ fn decompile_inner(ncs: &kq_format::ncs::Ncs, game: Game) -> Decompiled {
             return fallback_decompile(ncs, "missing CFG");
         };
         match build_sub(&ncs.instructions, info, cfg, &globals, &protos, game) {
-            Ok(mut block) => {
-                let mut vars = cleanup::VarTable::new();
+            Ok((mut block, mut vars, sub_structs)) => {
                 cleanup::cleanup(&mut block, &mut vars);
+                match &mut structs {
+                    Some(acc) => acc.absorb(sub_structs),
+                    None => structs = Some(sub_structs),
+                }
                 reports.push(SubReport {
                     id,
                     start: range.start_pos,
@@ -163,7 +167,9 @@ fn decompile_inner(ncs: &kq_format::ncs::Ncs, game: Game) -> Decompiled {
         }
     }
 
-    let structs = StructTable::new();
+    let Some(structs) = structs else {
+        return fallback_decompile(ncs, "no functions emitted");
+    };
     let globals_ref = program.globals.as_ref().map(|_| &globals);
     let source = emit::emit_program(&structs, globals_ref, &items);
     if source.is_empty() {
