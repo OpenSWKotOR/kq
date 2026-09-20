@@ -265,36 +265,49 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
     ));
 
     let hits = Mutex::new(Vec::<(u32, HashSet<String>, HashSet<i64>, HashSet<String>)>::new());
-    scan_ids.par_iter().for_each(|&i| {
-        let r = &index.resources[i as usize];
-        let Ok(bytes) = read::read(index, r) else {
+    let groups = group_scan_ids_by_file(index, &scan_ids);
+    groups.par_iter().for_each(|(file_idx, ids)| {
+        let path = &index.files[*file_idx as usize];
+        let Ok(map) = read::map_file(path) else {
             return;
         };
-        let Ok(decoded) = render::decode_resource(index, r, &bytes) else {
-            return;
-        };
-        let mut mentions = HashSet::new();
-        let mut strrefs = HashSet::new();
-        let mut missing = HashSet::new();
-        let scope = resource_scope(index, r);
-        collect(
-            &decoded,
-            index,
-            &winners_map,
-            &module_entries,
-            &scope,
-            &module_roots,
-            &r.resref,
-            r.restype.extension(),
-            strref_mode(r.restype),
-            &mut mentions,
-            &mut strrefs,
-            &mut missing,
-        );
-        if !mentions.is_empty() || !strrefs.is_empty() || !missing.is_empty() {
-            hits.lock()
-                .expect("live scan lock")
-                .push((i, mentions, strrefs, missing));
+        for &i in ids {
+            let r = &index.resources[i as usize];
+            if r.restype.extension() == Some("mdl") {
+                continue; // Task 10: texture_refs
+            }
+            let end = r.offset as usize + r.size as usize;
+            if end > map.len() {
+                continue;
+            }
+            let bytes = &map[r.offset as usize..end];
+            let owned = bytes.to_vec(); // interim; Task 10 avoids heavy mdl JSON
+            let Ok(decoded) = render::decode_resource(index, r, &owned) else {
+                continue;
+            };
+            let mut mentions = HashSet::new();
+            let mut strrefs = HashSet::new();
+            let mut missing = HashSet::new();
+            let scope = resource_scope(index, r);
+            collect(
+                &decoded,
+                index,
+                &winners_map,
+                &module_entries,
+                &scope,
+                &module_roots,
+                &r.resref,
+                r.restype.extension(),
+                strref_mode(r.restype),
+                &mut mentions,
+                &mut strrefs,
+                &mut missing,
+            );
+            if !mentions.is_empty() || !strrefs.is_empty() || !missing.is_empty() {
+                hits.lock()
+                    .expect("live scan lock")
+                    .push((i, mentions, strrefs, missing));
+            }
         }
     });
 
@@ -359,6 +372,23 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
         tlk,
         scanned: scan_ids.len(),
     })
+}
+
+/// Group scan ids by archive file, each group sorted by byte offset.
+pub fn group_scan_ids_by_file(index: &Index, ids: &[u32]) -> Vec<(u32, Vec<u32>)> {
+    let mut by_file: HashMap<u32, Vec<u32>> = HashMap::new();
+    for &id in ids {
+        by_file
+            .entry(index.resources[id as usize].file)
+            .or_default()
+            .push(id);
+    }
+    let mut groups: Vec<(u32, Vec<u32>)> = by_file.into_iter().collect();
+    groups.sort_by_key(|(f, _)| *f);
+    for (_, ids) in &mut groups {
+        ids.sort_by_key(|&i| index.resources[i as usize].offset);
+    }
+    groups
 }
 
 pub fn is_asset(t: ResType) -> bool {
@@ -1095,6 +1125,27 @@ mod tests {
     }
 
     #[test]
+    fn group_scan_ids_orders_offsets_within_file() {
+        let mut index = fixture_two_modules_shared_are();
+        // Fixture offsets are all 0; scramble file-0 so sort is observable.
+        index.resources[0].offset = 300;
+        index.resources[2].offset = 100;
+        index.resources[4].offset = 200;
+        index.resources[7].offset = 50;
+        let ids: Vec<u32> = (0..index.resources.len() as u32).collect();
+        let groups = group_scan_ids_by_file(&index, &ids);
+        for (_, group) in &groups {
+            let offsets: Vec<u64> = group
+                .iter()
+                .map(|&i| index.resources[i as usize].offset)
+                .collect();
+            let mut sorted = offsets.clone();
+            sorted.sort_unstable();
+            assert_eq!(offsets, sorted);
+        }
+    }
+
+    #[test]
     fn ebo_m40ad_seed_survives_colliding_m12aa_are() {
         let index = fixture_two_modules_shared_are();
         let winners_map = scoped_winners(&index);
@@ -1555,16 +1606,7 @@ mod tests {
         let roots = HashSet::new();
         let mut out = HashSet::new();
         consider_token(
-            "3",
-            &index,
-            &winners,
-            &entries,
-            &None,
-            &roots,
-            "x",
-            None,
-            &mut out,
-            None,
+            "3", &index, &winners, &entries, &None, &roots, "x", None, &mut out, None,
         );
         assert!(out.is_empty());
     }

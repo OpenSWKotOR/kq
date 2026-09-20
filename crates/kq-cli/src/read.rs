@@ -4,10 +4,19 @@
 //! from a BIF, a capsule, or a loose file, so one reader covers all of them.
 
 use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 
 use kq_index::{Index, Resource};
+
+/// Memory-map an archive (or loose file) for sequential resource reads.
+pub fn map_file(path: &Path) -> Result<memmap2::Mmap> {
+    let file =
+        std::fs::File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
+    // SAFETY: read-only scan; concurrent truncate may error mid-slice.
+    unsafe { memmap2::Mmap::map(&file) }.with_context(|| format!("cannot map {}", path.display()))
+}
 
 /// Read one resource's bytes.
 pub fn read(index: &Index, r: &Resource) -> Result<Vec<u8>> {
