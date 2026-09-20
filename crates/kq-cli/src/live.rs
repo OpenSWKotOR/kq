@@ -996,10 +996,10 @@ mod tests {
         assert!(!out.contains("****"));
     }
 
-    #[test]
-    fn are_mentions_same_resref_lyt() {
+    fn fixture_end_m01aa_are_lyt() -> Index {
         let lyt = ResType::from_extension("lyt").unwrap().0;
         let are = ResType::from_extension("are").unwrap().0;
+        let ifo = ResType::from_extension("ifo").unwrap().0;
         let mut index: Index = serde_json::from_value(serde_json::json!({
             "schema": 3,
             "root": "/game",
@@ -1012,6 +1012,7 @@ mod tests {
                 {"kind":"chitin","label":"layouts.bif","precedence":700,"module_root":null}
             ],
             "resources": [
+                {"resref":"module","restype":ifo,"file":0,"offset":0,"size":1,"source":0},
                 {"resref":"m01aa","restype":are,"file":0,"offset":0,"size":1,"source":0},
                 {"resref":"m01aa","restype":lyt,"file":1,"offset":0,"size":1,"source":1}
             ],
@@ -1019,6 +1020,12 @@ mod tests {
         }))
         .unwrap();
         index.reindex();
+        index
+    }
+
+    #[test]
+    fn are_mentions_same_resref_lyt() {
+        let index = fixture_end_m01aa_are_lyt();
 
         let winners = scoped_winners(&index);
         let mut edges = HashMap::new();
@@ -1034,6 +1041,21 @@ mod tests {
         let mut out = HashSet::new();
         take_tokens("m01aa.lyt", &known, &roots, "m01aa", Some("are"), &mut out);
         assert!(out.contains("m01aa"));
+    }
+
+    #[test]
+    fn build_reaches_chitin_lyt_from_reachable_are() {
+        let index = fixture_end_m01aa_are_lyt();
+        let winners = scoped_winners(&index);
+        let lyt_ty = ResType::from_extension("lyt").unwrap();
+        let lyt_id = *winners.get(&(None, "m01aa".into(), lyt_ty)).unwrap();
+
+        let graph = build(&index).expect("build");
+        assert!(
+            graph.used_ids.contains(&lyt_id),
+            "global m01aa.lyt must land in used_ids when end_m01aa is seeded; used_ids={:?}",
+            graph.used_ids
+        );
     }
 
     #[test]
