@@ -30,7 +30,7 @@ pub struct Instruction {
     pub argc: Option<u8>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Arg {
     Int(i64),
     Float(f64),
@@ -164,7 +164,7 @@ fn read_instruction(r: &mut Reader<'_>, offset: usize, end: usize) -> Result<Ins
             ins.args.push(Arg::Int(r.i16_be()? as i64));
             ins.args.push(Arg::Int(r.u16_be()? as i64));
         }
-        Operands::Increment => ins.args.push(Arg::Int(r.u32_be()? as i64)),
+        Operands::Increment => ins.args.push(Arg::Int(r.i32_be()? as i64)),
         Operands::StoreState => {
             ins.args.push(Arg::Int(r.u32_be()? as i64));
             ins.args.push(Arg::Int(r.u32_be()? as i64));
@@ -257,5 +257,15 @@ mod tests {
         data.push(0x00);
         data.extend_from_slice(&13u32.to_be_bytes());
         assert!(read(&data, Path::new("bad.ncs")).is_err());
+    }
+
+    #[test]
+    fn increment_offset_is_signed() {
+        // INCxSP -12: opcode 0x24, qualifier 0x03, i32be offset.
+        let mut data = header(19);
+        data.extend_from_slice(&[0x24, 0x03]);
+        data.extend_from_slice(&(-12i32).to_be_bytes());
+        let n = read(&data, Path::new("t.ncs")).unwrap();
+        assert_eq!(n.instructions.last().unwrap().args[0], Arg::Int(-12));
     }
 }
