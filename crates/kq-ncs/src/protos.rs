@@ -13,7 +13,6 @@ use crate::ty::Ty;
 use crate::{Game, Severity, SubId, Warning};
 
 const MAX_PASSES: usize = 3;
-const PARAM_CAP: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubInfo {
@@ -21,6 +20,7 @@ pub struct SubInfo {
     pub start_pos: u32,
     pub kind: SubKind,
     pub ret: Ty,
+    pub ret_slots: usize,
     pub ret_depth: i32,
     pub param_count: usize, // slots
     pub params: Vec<Ty>,    // bottom-first; default Int placeholders
@@ -38,6 +38,7 @@ pub fn infer_prototypes(
     let nodes: Vec<SubId> = subs.iter().map(|(id, _)| *id).collect();
     let edges = call_graph(ins, &subs, cfgs, &by_pos);
     let sccs = tarjan_sccs(&nodes, &edges);
+    let site_est = call_site_estimates(ins, &subs, cfgs, &by_pos);
 
     let mut infos: HashMap<SubId, SubInfo> = HashMap::new();
     let mut warnings = Vec::new();
@@ -50,16 +51,27 @@ pub fn infer_prototypes(
                     Some((_, s)) => *s,
                     None => continue,
                 };
-                let next = infer_one(ins, id, sub, cfgs.get(&id), &by_pos, &infos, game);
+                let next = infer_one(
+                    ins,
+                    id,
+                    sub,
+                    cfgs.get(&id),
+                    &by_pos,
+                    &infos,
+                    game,
+                    &mut warnings,
+                );
                 changed |= merge_info(id, next, &mut infos, &mut warnings);
             }
             if !changed {
                 break;
             }
         }
+        for &id in scc {
+            finalize_return(id, &site_est, &mut infos, &mut warnings);
+        }
     }
 
-    let site_est = call_site_estimates(ins, &subs, cfgs, &by_pos);
     cross_check(&infos, &site_est, &mut warnings);
 
     (infos, warnings)
@@ -233,10 +245,12 @@ fn merge_info(
     }
     if cur.ret == Ty::Unknown && next.ret != Ty::Unknown {
         cur.ret = next.ret;
+        cur.ret_slots = next.ret_slots;
         cur.ret_depth = next.ret_depth;
         changed = true;
     } else if cur.ret == Ty::Void && next.ret != Ty::Void && next.ret != Ty::Unknown {
         cur.ret = next.ret;
+        cur.ret_slots = next.ret_slots;
         cur.ret_depth = next.ret_depth;
         changed = true;
     }
@@ -248,6 +262,26 @@ struct Slot {
     ty: Ty,
     /// 1-based depth below the frame when this slot is a param copy.
     param_depth: Option<usize>,
+    /// A type conflict is distinct from an unresolved type and must stay unknown.
+    type_conflict: bool,
+}
+
+impl Slot {
+    fn new(ty: Ty) -> Self {
+        Self {
+            ty,
+            param_depth: None,
+            type_conflict: false,
+        }
+    }
+
+    fn param(ty: Ty, depth: usize) -> Self {
+        Self {
+            ty,
+            param_depth: Some(depth),
+            type_conflict: false,
+        }
+    }
 }
 
 struct Walk {
@@ -268,12 +302,13 @@ struct BelowCp {
 
 fn infer_one(
     ins: &[Instruction],
-    _id: SubId,
+    id: SubId,
     sub: &SubRange,
     cfg: Option<&Cfg>,
     by_pos: &HashMap<u32, SubId>,
     known: &HashMap<SubId, SubInfo>,
     game: Game,
+    warnings: &mut Vec<Warning>,
 ) -> SubInfo {
     let mut walk = Walk {
         param_height0: None,
@@ -291,7 +326,6 @@ fn infer_one(
     }
 
     let mut stack_in: HashMap<usize, Vec<Slot>> = HashMap::new();
-    let mut visits: HashMap<usize, u32> = HashMap::new();
     let mut q = VecDeque::new();
     let entry = range.start;
     if cfg
@@ -304,10 +338,6 @@ fn infer_one(
     q.push_back(entry);
 
     while let Some(i) = q.pop_front() {
-        if visits.get(&i).copied().unwrap_or(0) >= 8 {
-            continue;
-        }
-        *visits.entry(i).or_insert(0) += 1;
         let mut stack = stack_in.get(&i).cloned().unwrap_or_default();
         apply(ins, i, &mut stack, &mut walk, by_pos, known, game);
 
@@ -333,11 +363,28 @@ fn infer_one(
                     stack_in.insert(s, stack.clone());
                     q.push_back(s);
                 }
-                Some(old) if old.len() != stack.len() => {}
-                Some(old) if old == &stack => {}
-                Some(_) => {
-                    stack_in.insert(s, stack.clone());
-                    q.push_back(s);
+                Some(old) => {
+                    let mut merged = old.clone();
+                    match merge_stack_state(&mut merged, &stack) {
+                        Ok(true) => {
+                            stack_in.insert(s, merged);
+                            q.push_back(s);
+                        }
+                        Ok(false) => {}
+                        Err((old_height, incoming_height)) => {
+                            push_warning_unique(
+                                warnings,
+                                warn(
+                                    id,
+                                    Some(ins[s].offset),
+                                    format!(
+                                        "irreconcilable stack heights at join: \
+                                         {old_height} and {incoming_height}"
+                                    ),
+                                ),
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -363,16 +410,11 @@ fn apply(
             let height = stack.len();
             if height == 0 {
                 if popped > 0 {
-                    walk.param_height0 = Some(popped.min(PARAM_CAP));
+                    walk.param_height0 = Some(popped);
                 }
             } else if popped > height {
                 let below = popped - height;
-                walk.min_below = Some(
-                    walk.min_below
-                        .map(|m| m.min(below))
-                        .unwrap_or(below)
-                        .min(PARAM_CAP),
-                );
+                walk.min_below = Some(walk.min_below.map(|m| m.min(below)).unwrap_or(below));
                 stack.clear();
             } else {
                 stack.truncate(height - popped);
@@ -389,10 +431,7 @@ fn apply(
                     let depth = depth0 + k;
                     walk.param_seen.insert(depth);
                     let ty = walk.param_ty.get(&depth).copied().unwrap_or(Ty::Int);
-                    stack.push(Slot {
-                        ty,
-                        param_depth: Some(depth),
-                    });
+                    stack.push(Slot::param(ty, depth));
                 }
             } else if loc > 0 && copy > 0 && copy <= loc && loc <= height {
                 let first = loc - copy + 1;
@@ -415,12 +454,10 @@ fn apply(
                     ty,
                     slots: copy,
                 });
-                if depth <= PARAM_CAP {
-                    // May be a param write; classified after param_count is known.
-                    if let Some(top) = stack.last() {
-                        walk.param_ty.entry(depth).or_insert(top.ty);
-                        walk.param_seen.insert(depth);
-                    }
+                // May be a param write; classified after param_count is known.
+                if let Some(top) = stack.last() {
+                    walk.param_ty.entry(depth).or_insert(top.ty);
+                    walk.param_seen.insert(depth);
                 }
             }
         }
@@ -433,6 +470,7 @@ fn apply(
             };
             if let Some(info) = known.get(&callee) {
                 pop_n(stack, info.param_count);
+                push_return_slots(stack, info.ret, info.ret_slots);
             }
         }
         "ACTION" => apply_action(inst, stack, walk, game),
@@ -453,43 +491,28 @@ fn apply(
         "EQUALTT" | "NEQUALTT" => {
             let slots = stack_size_to_pos(arg_int(inst, 0)).max(1);
             pop_n(stack, 2 * slots);
-            stack.push(Slot {
-                ty: Ty::Int,
-                param_depth: None,
-            });
+            stack.push(Slot::new(Ty::Int));
         }
         "ADDVV" | "SUBVV" => {
             pop_n(stack, 6);
             for _ in 0..3 {
-                stack.push(Slot {
-                    ty: Ty::Float,
-                    param_depth: None,
-                });
+                stack.push(Slot::new(Ty::Float));
             }
         }
         "MULVF" | "DIVVF" | "MULFV" | "DIVFV" => {
             pop_n(stack, 4);
             for _ in 0..3 {
-                stack.push(Slot {
-                    ty: Ty::Float,
-                    param_depth: None,
-                });
+                stack.push(Slot::new(Ty::Float));
             }
         }
         op if ty_from_op(op).is_some() => {
-            stack.push(Slot {
-                ty: ty_from_op(op).unwrap(),
-                param_depth: None,
-            });
+            stack.push(Slot::new(ty_from_op(op).unwrap()));
         }
         op if is_unary(op) => {}
         op if is_binary(op) => {
             let ret = binary_ret(op);
             pop_n(stack, 2);
-            stack.push(Slot {
-                ty: ret,
-                param_depth: None,
-            });
+            stack.push(Slot::new(ret));
         }
         _ => {}
     }
@@ -515,9 +538,9 @@ fn apply_action(inst: &Instruction, stack: &mut Vec<Slot>, walk: &mut Walk, game
                 arg_tys.push((n, p.ty));
             }
             let popped = pop_n(stack, slots);
-            // ACTION args are pushed left-to-right; top is last declared param.
+            // pop_n preserves bottom-to-top order, matching declared parameters.
             let mut idx = 0usize;
-            for (n, ty) in arg_tys.into_iter().rev() {
+            for (n, ty) in arg_tys {
                 for _ in 0..n {
                     if idx < popped.len() {
                         if let Some(d) = popped[idx].param_depth {
@@ -546,16 +569,10 @@ fn apply_action(inst: &Instruction, stack: &mut Vec<Slot>, walk: &mut Walk, game
         0 => {}
         3 if ret_ty == Ty::Vector => {
             for _ in 0..3 {
-                stack.push(Slot {
-                    ty: Ty::Float,
-                    param_depth: None,
-                });
+                stack.push(Slot::new(Ty::Float));
             }
         }
-        _ => stack.push(Slot {
-            ty: ret_ty,
-            param_depth: None,
-        }),
+        _ => stack.push(Slot::new(ret_ty)),
     }
 }
 
@@ -590,13 +607,13 @@ fn finish_info(sub: &SubRange, walk: &Walk) -> SubInfo {
             .unwrap_or(walk.max_param_depth)
             .max(walk.max_param_depth);
     }
-    param_count = param_count.min(PARAM_CAP);
-
-    let mut ret = Ty::Void;
+    let mut ret = Ty::Unknown;
+    let mut ret_slots = 0;
     let mut ret_depth = 0i32;
     for c in &walk.below_cpdown {
         if c.depth == param_count + c.slots || c.depth == param_count + 1 {
             ret = c.ty;
+            ret_slots = c.slots;
             ret_depth = c.depth as i32;
         }
     }
@@ -621,6 +638,7 @@ fn finish_info(sub: &SubRange, walk: &Walk) -> SubInfo {
         start_pos: sub.start_pos,
         kind: sub.kind,
         ret,
+        ret_slots,
         ret_depth,
         param_count,
         params,
@@ -628,13 +646,19 @@ fn finish_info(sub: &SubRange, walk: &Walk) -> SubInfo {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct CallSiteEstimate {
+    max_growth: usize,
+    calls: usize,
+}
+
 fn call_site_estimates(
     ins: &[Instruction],
     subs: &[(SubId, &SubRange)],
     cfgs: &HashMap<SubId, Cfg>,
     by_pos: &HashMap<u32, SubId>,
-) -> HashMap<SubId, usize> {
-    let mut est: HashMap<SubId, usize> = HashMap::new();
+) -> HashMap<SubId, CallSiteEstimate> {
+    let mut est: HashMap<SubId, CallSiteEstimate> = HashMap::new();
     for (id, sub) in subs {
         let cfg = cfgs.get(id);
         let mut growth_at: HashMap<usize, usize> = HashMap::new();
@@ -671,11 +695,11 @@ fn call_site_estimates(
                 }
                 "JZ" | "JNZ" => growth = growth.saturating_sub(1),
                 "JSR" => {
-                    let inferred = growth.saturating_sub(1);
                     if let Some(t) = arg_jump(inst) {
                         if let Some(&callee) = by_pos.get(&t) {
-                            let e = est.entry(callee).or_insert(0);
-                            *e = (*e).max(inferred);
+                            let entry = est.entry(callee).or_default();
+                            entry.max_growth = entry.max_growth.max(growth);
+                            entry.calls += 1;
                         }
                     }
                     growth = 0;
@@ -703,11 +727,12 @@ fn call_site_estimates(
 
 fn cross_check(
     infos: &HashMap<SubId, SubInfo>,
-    site_est: &HashMap<SubId, usize>,
+    site_est: &HashMap<SubId, CallSiteEstimate>,
     warnings: &mut Vec<Warning>,
 ) {
     for (id, info) in infos {
-        if let Some(&est) = site_est.get(id) {
+        if let Some(estimate) = site_est.get(id) {
+            let est = estimate.max_growth.saturating_sub(info.ret_slots);
             if est > 0 && est != info.param_count {
                 warnings.push(warn(
                     *id,
@@ -719,6 +744,45 @@ fn cross_check(
                 ));
             }
         }
+    }
+}
+
+fn finalize_return(
+    id: SubId,
+    site_est: &HashMap<SubId, CallSiteEstimate>,
+    infos: &mut HashMap<SubId, SubInfo>,
+    warnings: &mut Vec<Warning>,
+) {
+    let Some(info) = infos.get_mut(&id) else {
+        return;
+    };
+    if info.ret != Ty::Unknown {
+        return;
+    }
+
+    if !matches!(info.kind, SubKind::User(_)) {
+        info.ret = Ty::Void;
+        info.ret_slots = 0;
+        return;
+    }
+
+    let recognized_void = site_est
+        .get(&id)
+        .is_some_and(|estimate| estimate.calls > 0 && estimate.max_growth <= info.param_count);
+    if recognized_void {
+        info.ret = Ty::Void;
+        info.ret_slots = 0;
+    } else {
+        info.ret = Ty::Int;
+        info.ret_slots = 1;
+        push_warning_unique(
+            warnings,
+            warn(
+                id,
+                Some(info.start_pos),
+                "unresolved return type; defaulting prototype return to int".into(),
+            ),
+        );
     }
 }
 
@@ -734,9 +798,69 @@ fn warn(id: SubId, pos: Option<u32>, msg: String) -> Warning {
     }
 }
 
+fn push_warning_unique(warnings: &mut Vec<Warning>, warning: Warning) {
+    if warnings.iter().any(|existing| {
+        existing.sub == warning.sub
+            && existing.pos == warning.pos
+            && existing.severity == warning.severity
+            && existing.msg == warning.msg
+    }) {
+        return;
+    }
+    warnings.push(warning);
+}
+
+fn merge_stack_state(current: &mut [Slot], incoming: &[Slot]) -> Result<bool, (usize, usize)> {
+    if current.len() != incoming.len() {
+        return Err((current.len(), incoming.len()));
+    }
+
+    let mut changed = false;
+    for (dst, src) in current.iter_mut().zip(incoming) {
+        let (ty, type_conflict) = if dst.type_conflict || src.type_conflict {
+            (Ty::Unknown, true)
+        } else if dst.ty == src.ty {
+            (dst.ty, false)
+        } else if dst.ty == Ty::Unknown {
+            (src.ty, false)
+        } else if src.ty == Ty::Unknown {
+            (dst.ty, false)
+        } else {
+            (Ty::Unknown, true)
+        };
+        let param_depth = if dst.param_depth == src.param_depth {
+            dst.param_depth
+        } else {
+            None
+        };
+        let merged = Slot {
+            ty,
+            param_depth,
+            type_conflict,
+        };
+        if *dst != merged {
+            *dst = merged;
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
 fn pop_n(stack: &mut Vec<Slot>, n: usize) -> Vec<Slot> {
     let k = n.min(stack.len());
     stack.split_off(stack.len() - k)
+}
+
+fn push_return_slots(stack: &mut Vec<Slot>, ty: Ty, recorded_slots: usize) {
+    let (slots, slot_ty) = match ty {
+        Ty::Void | Ty::Action | Ty::Unknown => (0, Ty::Unknown),
+        Ty::Vector => (3, Ty::Float),
+        Ty::Struct(_) => (recorded_slots.max(1), ty),
+        _ => (1, ty),
+    };
+    for _ in 0..slots {
+        stack.push(Slot::new(slot_ty));
+    }
 }
 
 fn ret_ty_from_top(stack: &[Slot], slots: usize) -> Ty {
@@ -792,13 +916,26 @@ fn is_binary(op: &str) -> bool {
 }
 
 fn binary_ret(op: &str) -> Ty {
-    if op.contains("FF") || op.contains("IF") || op.contains("FI") {
+    if is_comparison_or_logical(op) {
+        Ty::Int
+    } else if op.contains("FF") || op.contains("IF") || op.contains("FI") {
         Ty::Float
     } else if op.ends_with("SS") {
         Ty::Str
     } else {
         Ty::Int
     }
+}
+
+fn is_comparison_or_logical(op: &str) -> bool {
+    op.starts_with("LOG")
+        || op.starts_with("EQUAL")
+        || op.starts_with("NEQUAL")
+        || op.starts_with("GEQ")
+        || op.starts_with("GT")
+        || op.starts_with("LT")
+        || op.starts_with("LEQ")
+        || op.starts_with("BOOL")
 }
 
 fn arg_int(ins: &Instruction, i: usize) -> i32 {
@@ -817,138 +954,25 @@ fn arg_jump(ins: &Instruction) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::infer_prototypes;
-    use crate::cfg::analyze;
-    use crate::split;
-    use crate::ty::Ty;
-    use crate::{Game, SubId};
-    use kq_format::ncs::{Arg, Instruction};
-    use std::collections::HashMap;
+    use super::{merge_stack_state, Slot};
+    use crate::{StructId, Ty};
 
-    #[derive(Clone, Debug)]
-    enum AsmArg {
-        JumpAbs(u32),
-        Int(i64),
-    }
+    #[test]
+    fn stack_merge_prefers_known_type_over_unknown() {
+        let mut current = vec![Slot::new(Ty::Unknown)];
+        let incoming = vec![Slot::new(Ty::Object)];
 
-    fn asm(lines: &[(&str, Vec<AsmArg>)]) -> Vec<Instruction> {
-        let mut offset = 13u32;
-        let mut out = Vec::with_capacity(lines.len());
-        for (op, args) in lines {
-            let spec = kotor_ncs_isa::lookup_mnemonic(op)
-                .unwrap_or_else(|| panic!("unknown mnemonic {op}"));
-            let size = 2 + spec.operands.byte_len().expect("fixed-size op") as u32;
-            let mut ins = Instruction {
-                offset,
-                op: spec.mnemonic,
-                args: Vec::new(),
-                routine: None,
-                routine_name: None,
-                argc: None,
-            };
-            for arg in args {
-                match arg {
-                    AsmArg::JumpAbs(t) => ins.args.push(Arg::Jump(*t)),
-                    AsmArg::Int(v) => ins.args.push(Arg::Int(*v)),
-                }
-            }
-            out.push(ins);
-            offset += size;
-        }
-        out
-    }
-
-    fn cfgs_for(ins: &[Instruction], p: &split::SplitProgram) -> HashMap<SubId, crate::cfg::Cfg> {
-        let mut m = HashMap::new();
-        if let Some(g) = &p.globals {
-            m.insert(SubId::Globals, analyze(ins, g, &p.deferred));
-        }
-        m.insert(SubId::Main, analyze(ins, &p.main, &p.deferred));
-        for u in &p.users {
-            if let split::SubKind::User(id) = u.kind {
-                m.insert(SubId::User(id), analyze(ins, u, &p.deferred));
-            }
-        }
-        m
+        assert_eq!(merge_stack_state(&mut current, &incoming), Ok(true));
+        assert_eq!(current[0].ty, Ty::Object);
     }
 
     #[test]
-    fn void_two_params() {
-        // void sub1(int, int) {}  — compiler epilogue MOVSP -8; RETN
-        // Offsets: main CONSTI@21, CONSTI@27, JSR@33→41, RETN@39; sub1 MOVSP@41, RETN@47.
-        let ins = asm(&[
-            ("JSR", vec![AsmArg::JumpAbs(21)]),
-            ("RETN", vec![]),
-            ("CONSTI", vec![AsmArg::Int(1)]),
-            ("CONSTI", vec![AsmArg::Int(2)]),
-            ("JSR", vec![AsmArg::JumpAbs(41)]),
-            ("RETN", vec![]),
-            ("MOVSP", vec![AsmArg::Int(-8)]),
-            ("RETN", vec![]),
-        ]);
-        let p = split::split(&ins).unwrap();
-        let cfgs = cfgs_for(&ins, &p);
-        let (infos, _warns) = infer_prototypes(&ins, &p, &cfgs, Game::K1);
-        let sub = &infos[&SubId::User(1)];
-        assert_eq!(sub.param_count, 2);
-        assert_eq!(sub.ret, Ty::Void);
-        assert_eq!(sub.params, vec![Ty::Int, Ty::Int]);
-    }
+    fn struct_return_pushes_recorded_slot_count() {
+        let mut stack = Vec::new();
 
-    #[test]
-    fn int_return_one_param() {
-        // int sub1(int x) { return 1; }
-        // CONSTI; CPDOWNSP -12 4 (below frame); MOVSP -4; MOVSP -4; RETN
-        // Offsets: main RSADDI@21, CONSTI@23, JSR@29→43; sub1 CONSTI@43, CPDOWNSP@49.
-        let ins = asm(&[
-            ("JSR", vec![AsmArg::JumpAbs(21)]),
-            ("RETN", vec![]),
-            ("RSADDI", vec![]),
-            ("CONSTI", vec![AsmArg::Int(0)]),
-            ("JSR", vec![AsmArg::JumpAbs(43)]),
-            ("MOVSP", vec![AsmArg::Int(-4)]),
-            ("RETN", vec![]),
-            ("CONSTI", vec![AsmArg::Int(1)]),
-            ("CPDOWNSP", vec![AsmArg::Int(-12), AsmArg::Int(4)]),
-            ("MOVSP", vec![AsmArg::Int(-4)]),
-            ("MOVSP", vec![AsmArg::Int(-4)]),
-            ("RETN", vec![]),
-        ]);
-        let p = split::split(&ins).unwrap();
-        let cfgs = cfgs_for(&ins, &p);
-        let (infos, _warns) = infer_prototypes(&ins, &p, &cfgs, Game::K1);
-        let sub = &infos[&SubId::User(1)];
-        assert_eq!(sub.param_count, 1);
-        assert_eq!(sub.ret, Ty::Int);
-        assert_eq!(sub.ret_depth, 2);
-        assert_eq!(sub.params, vec![Ty::Int]);
-    }
+        super::push_return_slots(&mut stack, Ty::Struct(StructId(0)), 4);
 
-    #[test]
-    fn recursive_pair_scc_converges() {
-        // sub1 calls sub2; sub2 calls sub1; both take 1 int, return void
-        // Offsets: main@21, sub1 CPTOPSP@35 JSR@43→57, sub2 CPTOPSP@57 JSR@65→35.
-        let ins = asm(&[
-            ("JSR", vec![AsmArg::JumpAbs(21)]),
-            ("RETN", vec![]),
-            ("CONSTI", vec![AsmArg::Int(1)]),
-            ("JSR", vec![AsmArg::JumpAbs(35)]),
-            ("RETN", vec![]),
-            ("CPTOPSP", vec![AsmArg::Int(-4), AsmArg::Int(4)]),
-            ("JSR", vec![AsmArg::JumpAbs(57)]),
-            ("MOVSP", vec![AsmArg::Int(-4)]),
-            ("RETN", vec![]),
-            ("CPTOPSP", vec![AsmArg::Int(-4), AsmArg::Int(4)]),
-            ("JSR", vec![AsmArg::JumpAbs(35)]),
-            ("MOVSP", vec![AsmArg::Int(-4)]),
-            ("RETN", vec![]),
-        ]);
-        let p = split::split(&ins).unwrap();
-        let cfgs = cfgs_for(&ins, &p);
-        let (infos, _warns) = infer_prototypes(&ins, &p, &cfgs, Game::K1);
-        assert_eq!(infos[&SubId::User(1)].param_count, 1);
-        assert_eq!(infos[&SubId::User(2)].param_count, 1);
-        assert_eq!(infos[&SubId::User(1)].ret, Ty::Void);
-        assert_eq!(infos[&SubId::User(2)].ret, Ty::Void);
+        assert_eq!(stack.len(), 4);
+        assert!(stack.iter().all(|slot| slot.ty == Ty::Struct(StructId(0))));
     }
 }
