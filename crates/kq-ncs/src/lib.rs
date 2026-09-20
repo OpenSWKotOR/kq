@@ -3,9 +3,11 @@
 mod actions;
 mod actions_gen;
 mod fallback;
+mod split;
 mod ty;
 
 pub use kq_index::Game;
+pub use split::{split, DeferredRegion, SplitError, SplitProgram, SubKind, SubRange};
 
 #[derive(Clone, Debug)]
 pub struct Decompiled {
