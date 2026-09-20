@@ -169,11 +169,13 @@ const K1_SCRIPTS: &[&str] = &[
     "k_def_userdef01",
     "k_hen_attacked01",
     "k_hen_combend01",
+    "k_hen_dialogue01",
     "k_hen_enter5m",
     "k_hen_exit5m",
     "k_hen_heartbt01",
     "k_hen_leadchng",
     "k_hen_percept01",
+    "k_hen_retreat",
     "k_hen_spawn01",
     "k_pend_screenchg",
     "k_repair_part",
@@ -822,9 +824,8 @@ fn collect(
     missing: &mut HashSet<String>,
 ) {
     match decoded {
-        Decoded::Value(v) => walk_json(
-            v,
-            &mut Walk {
+        Decoded::Value(v) => {
+            let mut w = Walk {
                 index,
                 winners,
                 module_entries,
@@ -836,9 +837,14 @@ fn collect(
                 mentions,
                 strrefs,
                 missing,
-            },
-            None,
-        ),
+            };
+            // CONSTS-only until ACTION-aware ResRef edges land with DeNCS.
+            if self_ext == Some("ncs") || v.get("instructions").is_some_and(J::is_array) {
+                walk_ncs_consts(v, &mut w);
+            } else {
+                walk_json(v, &mut w, None);
+            }
+        }
         Decoded::Text(s) => take_tokens(
             s,
             index,
@@ -867,6 +873,43 @@ struct Walk<'a> {
     mentions: &'a mut HashSet<String>,
     strrefs: &'a mut HashSet<i64>,
     missing: &'a mut HashSet<String>,
+}
+
+fn walk_ncs_consts(v: &J, w: &mut Walk<'_>) {
+    let Some(instructions) = v.get("instructions").and_then(J::as_array) else {
+        return;
+    };
+    for ins in instructions {
+        let Some(map) = ins.as_object() else {
+            continue;
+        };
+        let Some(op) = map.get("op").and_then(J::as_str) else {
+            continue;
+        };
+        if op != "CONSTS" {
+            continue;
+        }
+        let Some(args) = map.get("args").and_then(J::as_array) else {
+            continue;
+        };
+        for arg in args {
+            let J::String(s) = arg else {
+                continue;
+            };
+            take_tokens(
+                s,
+                w.index,
+                w.winners,
+                w.module_entries,
+                w.scope,
+                w.module_roots,
+                w.self_ref,
+                w.self_ext,
+                w.mentions,
+                Some(w.missing),
+            );
+        }
+    }
 }
 
 fn walk_json(v: &J, w: &mut Walk<'_>, key: Option<&str>) {
@@ -1590,6 +1633,61 @@ mod tests {
         assert_eq!(parse_strref("****"), None);
         assert_eq!(parse_strref("-1"), None);
         assert_eq!(parse_strref("48012"), Some(48012));
+    }
+
+    #[test]
+    fn k1_scripts_includes_engine_fallback_seeds() {
+        assert!(K1_SCRIPTS.contains(&"k_hen_dialogue01"));
+        assert!(K1_SCRIPTS.contains(&"k_hen_retreat"));
+        assert!(K1_SCRIPTS.contains(&"k_trg_transfail"));
+        assert!(K1_SCRIPTS.contains(&"k_def_pathfail01"));
+    }
+
+    #[test]
+    fn ncs_collect_consts_only_skips_opcode_and_action_names() {
+        let (index, winners, entries) = global_lookup(&[]);
+        let roots = HashSet::new();
+        let mut mentions = HashSet::new();
+        let mut strrefs = HashSet::new();
+        let mut missing = HashSet::new();
+        let v = serde_json::json!({
+            "declared_size": 42,
+            "instructions": [
+                {"offset": 13, "op": "CONSTS", "args": ["my_script"]},
+                {
+                    "offset": 20,
+                    "op": "ACTION",
+                    "routine": 200,
+                    "name": "GetObjectByTag",
+                    "argc": 2
+                },
+                {"offset": 25, "op": "RETN"}
+            ]
+        });
+        collect(
+            &Decoded::Value(v),
+            &index,
+            &winners,
+            &entries,
+            &None,
+            &roots,
+            "k_ai_master",
+            Some("ncs"),
+            StrRefMode::None,
+            &mut mentions,
+            &mut strrefs,
+            &mut missing,
+        );
+        assert!(
+            mentions.contains("my_script") || missing.contains("my_script"),
+            "CONSTS string must be mentioned; mentions={mentions:?} missing={missing:?}"
+        );
+        for noise in ["action", "getobjectbytag", "consts", "retn"] {
+            assert!(
+                !mentions.contains(noise) && !missing.contains(noise),
+                "opcode/routine name {noise} must not be a token; mentions={mentions:?} missing={missing:?}"
+            );
+        }
     }
 
     #[test]
