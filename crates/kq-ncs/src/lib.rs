@@ -297,6 +297,24 @@ fn emit_stmt(out: &mut String, stmt: &Stmt, globals: &GlobalTable, indent: usize
         Stmt::Break => out.push_str(&format!("{tabs}break;\n")),
         Stmt::Continue => out.push_str(&format!("{tabs}continue;\n")),
         Stmt::Comment(text) => out.push_str(&format!("{tabs}/* {text} */\n")),
+        Stmt::While { cond, body } => {
+            out.push_str(&tabs);
+            out.push_str("while (");
+            emit_expr(out, cond, globals, 0);
+            out.push_str(") {\n");
+            emit_block(out, body, globals, indent + 1);
+            out.push_str(&tabs);
+            out.push_str("}\n");
+        }
+        Stmt::DoWhile { body, cond } => {
+            out.push_str(&tabs);
+            out.push_str("do {\n");
+            emit_block(out, body, globals, indent + 1);
+            out.push_str(&tabs);
+            out.push_str("} while (");
+            emit_expr(out, cond, globals, 0);
+            out.push_str(");\n");
+        }
         _ => out.push_str(&format!("{tabs}/* unsupported statement */\n")),
     }
 }

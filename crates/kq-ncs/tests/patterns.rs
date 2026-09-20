@@ -113,6 +113,64 @@ fn golden_hjuh_h02_and_guard() {
 }
 
 #[test]
+fn golden_while() {
+    // Simpler 9b-only while: `int1 = 0; while (int1 < 3) { int1++; }`
+    // L@43 CPTOPSP; JZ@59→91; body INCxSP postfix; JMP@85→43; X@91.
+    let ncs = asm_to_ncs(&[
+        ("JSR", vec![JumpAbs(21)]),
+        ("RETN", vec![]),
+        ("RSADDI", vec![]),
+        ("CONSTI", vec![Int(0)]),
+        ("CPDOWNSP", vec![Int(-8), Int(4)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("CPTOPSP", vec![Int(-4), Int(4)]),
+        ("CONSTI", vec![Int(3)]),
+        ("LTII", vec![]),
+        ("JZ", vec![JumpAbs(91)]),
+        ("CPTOPSP", vec![Int(-4), Int(4)]),
+        ("INCxSP", vec![Int(-8)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("JMP", vec![JumpAbs(43)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("RETN", vec![]),
+    ]);
+    let d = decompile(&ncs, Game::K1);
+    assert_eq!(
+        d.source.trim(),
+        "void main() {\n\tint int1 = 0;\n\twhile (int1 < 3) {\n\t\tint1++;\n\t}\n}"
+    );
+}
+
+#[test]
+fn do_while_jz_skips_back_edge() {
+    // §5.4: JZ immediately before the backward JMP, target == pos(JZ)+12.
+    // L@43 body; JZ@79→91 (79+12); JMP@85→43.
+    let ncs = asm_to_ncs(&[
+        ("JSR", vec![JumpAbs(21)]),
+        ("RETN", vec![]),
+        ("RSADDI", vec![]),
+        ("CONSTI", vec![Int(0)]),
+        ("CPDOWNSP", vec![Int(-8), Int(4)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("CPTOPSP", vec![Int(-4), Int(4)]),
+        ("INCxSP", vec![Int(-8)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("CPTOPSP", vec![Int(-4), Int(4)]),
+        ("CONSTI", vec![Int(3)]),
+        ("LTII", vec![]),
+        ("JZ", vec![JumpAbs(91)]),
+        ("JMP", vec![JumpAbs(43)]),
+        ("MOVSP", vec![Int(-4)]),
+        ("RETN", vec![]),
+    ]);
+    let d = decompile(&ncs, Game::K1);
+    assert_eq!(
+        d.source.trim(),
+        "void main() {\n\tint int1 = 0;\n\tdo {\n\t\tint1++;\n\t} while (int1 < 3);\n}"
+    );
+}
+
+#[test]
 fn split_main_with_globals() {
     // (b) header JSR → globals; globals SAVEBP/JSR/RESTOREBP; then main; then sub1.
     // Offsets: globals@21, main@61, user1@69.

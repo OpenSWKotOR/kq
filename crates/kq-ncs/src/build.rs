@@ -1,4 +1,4 @@
-//! Stack-to-AST build pass for expressions and straight-line `if`/`else`.
+//! Stack-to-AST build pass for expressions, `if`/`else`, and `while`/`do-while`.
 
 use std::collections::HashMap;
 
@@ -47,6 +47,13 @@ struct Builder<'a> {
     game: Game,
     stack: Vec<Value>,
     next_var: u32,
+    /// After prefix `++`/`--`, the following `CPTOPSP`/`CPTOPBP` is the new value and is dropped (§6.5).
+    suppress_next_copy: bool,
+}
+
+enum LoopKind {
+    While { jz: usize, back: usize },
+    DoWhile { jz: usize, back: usize },
 }
 
 pub fn build_sub(
@@ -65,6 +72,7 @@ pub fn build_sub(
         game,
         stack: Vec::new(),
         next_var: 0,
+        suppress_next_copy: false,
     };
     builder.build_range(sub.range.start, sub.range.end)
 }
@@ -74,11 +82,21 @@ impl Builder<'_> {
         let mut block = Block::default();
         let mut i = start;
         while i < end {
-            let inst = &self.ins[i];
             if self.cfg.dead.get(i).copied().unwrap_or(false) {
                 i += 1;
                 continue;
             }
+            let op = self.ins[i].op;
+            if self.suppress_next_copy && !matches!(op, "CPTOPSP" | "CPTOPBP") {
+                self.suppress_next_copy = false;
+            }
+            if let Some(kind) = self.loop_at(i, end) {
+                let (stmt, next) = self.build_loop(i, kind)?;
+                block.stmts.push(stmt);
+                i = next;
+                continue;
+            }
+            let inst = &self.ins[i];
             match inst.op {
                 op if op.starts_with("RSADD") => {
                     let _ty = ty_from_rsadd(op).ok_or_else(|| self.unsupported(inst))?;
@@ -108,7 +126,9 @@ impl Builder<'_> {
                 "CPTOPBP" => self.copy_bp(inst)?,
                 "CPDOWNSP" => self.assign_sp(inst, &mut block)?,
                 "CPDOWNBP" => self.assign_bp(inst, &mut block)?,
-                "MOVSP" => self.movsp(inst)?,
+                "MOVSP" => self.movsp(inst, &mut block)?,
+                "INCxSP" | "DECxSP" => self.inc_sp(inst)?,
+                "INCxBP" | "DECxBP" => self.inc_bp(inst)?,
                 "ACTION" => self.call_action(inst, &mut block)?,
                 "JSR" => self.call_sub(inst, &mut block)?,
                 op if binary_op(op).is_some() => self.binary(inst, binary_op(op).unwrap())?,
@@ -173,6 +193,81 @@ impl Builder<'_> {
         Ok(block)
     }
 
+    fn loop_at(&self, i: usize, end: usize) -> Option<LoopKind> {
+        let origins = self.cfg.origins_backward.get(&i)?;
+        let back = origins
+            .iter()
+            .copied()
+            .filter(|&o| o >= i && o < end)
+            .max()?;
+        if self.is_do_while(back) {
+            Some(LoopKind::DoWhile { jz: back - 1, back })
+        } else {
+            Some(LoopKind::While {
+                jz: self.find_while_jz(i, back)?,
+                back,
+            })
+        }
+    }
+
+    fn is_do_while(&self, back: usize) -> bool {
+        if back == 0 {
+            return false;
+        }
+        let jz = &self.ins[back - 1];
+        if jz.op != "JZ" {
+            return false;
+        }
+        matches!(jz.args.first(), Some(Arg::Jump(t)) if *t == jz.offset + 12)
+    }
+
+    fn find_while_jz(&self, head: usize, back: usize) -> Option<usize> {
+        let after = back + 1;
+        for j in head..back {
+            if self.ins[j].op != "JZ" {
+                continue;
+            }
+            if self.cfg.and_guards.contains(&j) || self.cfg.log_or_extra_jz.contains(&j) {
+                continue;
+            }
+            let Ok(target) = jump_index(self.cfg, &self.ins[j]) else {
+                continue;
+            };
+            if target == after {
+                return Some(j);
+            }
+        }
+        None
+    }
+
+    fn build_loop(&mut self, head: usize, kind: LoopKind) -> Result<(Stmt, usize), BuildError> {
+        match kind {
+            LoopKind::While { jz, back } => {
+                let _cond_block = self.build_range(head, jz)?;
+                let cond = self.pop_at(jz)?;
+                let stack = self.stack.clone();
+                let body = self.build_range(jz + 1, back)?;
+                self.stack = stack;
+                Ok((Stmt::While { cond, body }, back + 1))
+            }
+            LoopKind::DoWhile { jz, back } => {
+                let stack = self.stack.clone();
+                let body = self.build_range(head, jz)?;
+                let cond = self.pop_at(jz)?;
+                self.stack = stack;
+                Ok((Stmt::DoWhile { body, cond }, back + 1))
+            }
+        }
+    }
+
+    fn pop_at(&mut self, i: usize) -> Result<Expr, BuildError> {
+        let pos = self.ins[i].offset;
+        self.stack
+            .pop()
+            .map(|v| v.expr())
+            .ok_or(BuildError::StackUnderflow { pos })
+    }
+
     fn push_const(
         &mut self,
         inst: &Instruction,
@@ -188,6 +283,10 @@ impl Builder<'_> {
     }
 
     fn copy_sp(&mut self, inst: &Instruction) -> Result<(), BuildError> {
+        if self.suppress_next_copy {
+            self.suppress_next_copy = false;
+            return Ok(());
+        }
         let loc = stack_offset_to_pos(arg_i32(inst, 0)?);
         let count = stack_size_to_pos(arg_i32(inst, 1)?);
         if loc == 0 || count == 0 || count > loc || loc > self.stack.len() {
@@ -200,6 +299,10 @@ impl Builder<'_> {
     }
 
     fn copy_bp(&mut self, inst: &Instruction) -> Result<(), BuildError> {
+        if self.suppress_next_copy {
+            self.suppress_next_copy = false;
+            return Ok(());
+        }
         let pos = stack_offset_to_pos(arg_i32(inst, 0)?);
         let count = stack_size_to_pos(arg_i32(inst, 1)?);
         if pos == 0 || count != 1 || pos > self.globals.vars.len() {
@@ -265,7 +368,7 @@ impl Builder<'_> {
         Ok(())
     }
 
-    fn movsp(&mut self, inst: &Instruction) -> Result<(), BuildError> {
+    fn movsp(&mut self, inst: &Instruction, block: &mut Block) -> Result<(), BuildError> {
         let amount = arg_i32(inst, 0)?;
         if amount >= 0 {
             return Err(self.unsupported(inst));
@@ -274,7 +377,67 @@ impl Builder<'_> {
         if count > self.stack.len() {
             return Err(self.underflow(inst));
         }
-        self.stack.truncate(self.stack.len() - count);
+        let start = self.stack.len() - count;
+        let popped: Vec<Value> = self.stack.drain(start..).collect();
+        for value in popped {
+            if is_inc_expr(&value) {
+                block.stmts.push(Stmt::Expr(value.expr()));
+            }
+        }
+        Ok(())
+    }
+
+    fn inc_sp(&mut self, inst: &Instruction) -> Result<(), BuildError> {
+        let loc = stack_offset_to_pos(arg_i32(inst, 0)?);
+        if loc == 0 || loc > self.stack.len() {
+            return Err(self.bad_operand(inst));
+        }
+        let dest = self.stack.len() - loc;
+        self.apply_inc(inst, self.stack[dest].clone(), loc > 1)
+    }
+
+    fn inc_bp(&mut self, inst: &Instruction) -> Result<(), BuildError> {
+        let pos = stack_offset_to_pos(arg_i32(inst, 0)?);
+        if pos == 0 || pos > self.globals.vars.len() {
+            return Err(self.bad_operand(inst));
+        }
+        let var = Value::Global(self.globals.vars.len() - pos);
+        self.apply_inc(inst, var, true)
+    }
+
+    fn apply_inc(
+        &mut self,
+        inst: &Instruction,
+        var: Value,
+        copy_may_precede: bool,
+    ) -> Result<(), BuildError> {
+        match &var {
+            Value::Local(_) | Value::Global(_) => {}
+            _ => return Err(self.unsupported(inst)),
+        }
+        let postfix = copy_may_precede
+            && self
+                .stack
+                .last()
+                .is_some_and(|top| values_same_var(top, &var));
+        let is_inc = inst.op.starts_with("INC");
+        let op = match (is_inc, postfix) {
+            (true, true) => UnaryOp::PostInc,
+            (false, true) => UnaryOp::PostDec,
+            (true, false) => UnaryOp::PreInc,
+            (false, false) => UnaryOp::PreDec,
+        };
+        let expr = Expr::Unary {
+            op,
+            expr: Box::new(var.expr()),
+        };
+        if postfix {
+            self.stack.pop();
+            self.stack.push(Value::Expr(expr));
+        } else {
+            self.suppress_next_copy = true;
+            self.stack.push(Value::Expr(expr));
+        }
         Ok(())
     }
 
@@ -367,6 +530,24 @@ impl Builder<'_> {
             op: inst.op.to_string(),
         }
     }
+}
+
+fn values_same_var(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Local(x), Value::Local(y)) => x == y,
+        (Value::Global(x), Value::Global(y)) => x == y,
+        _ => false,
+    }
+}
+
+fn is_inc_expr(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Expr(Expr::Unary {
+            op: UnaryOp::PreInc | UnaryOp::PreDec | UnaryOp::PostInc | UnaryOp::PostDec,
+            ..
+        })
+    )
 }
 
 fn to_else_arm(mut body: Block) -> ElseArm {
