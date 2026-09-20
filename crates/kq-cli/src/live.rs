@@ -345,6 +345,39 @@ pub fn is_noise(t: ResType) -> bool {
     SOURCE_EXTS.contains(&t.extension().unwrap_or(""))
 }
 
+/// `None` = global (override / chitin / etc.); `Some(module_root)` for module-local sources.
+pub type Scope = Option<String>;
+
+/// ModuleMod / ModuleRim → Some(module_root); everything else → None (global).
+pub fn resource_scope(index: &Index, r: &kq_index::Resource) -> Scope {
+    let source = index.source(r);
+    match source.kind {
+        kq_index::SourceKind::ModuleMod | kq_index::SourceKind::ModuleRim => {
+            source.module_root.as_ref().map(|s| s.to_ascii_lowercase())
+        }
+        _ => None,
+    }
+}
+
+/// Lowest precedence id per (scope, resref, restype).
+pub fn scoped_winners(index: &Index) -> HashMap<(Scope, String, ResType), u32> {
+    let mut best: HashMap<(Scope, String, ResType), (u32, u32)> = HashMap::new();
+    for (i, r) in index.resources.iter().enumerate() {
+        let scope = resource_scope(index, r);
+        let key = (scope, r.resref.clone(), r.restype);
+        let prec = index.sources[r.source as usize].precedence;
+        best.entry(key)
+            .and_modify(|(id, p)| {
+                if prec < *p || (prec == *p && (i as u32) < *id) {
+                    *id = i as u32;
+                    *p = prec;
+                }
+            })
+            .or_insert((i as u32, prec));
+    }
+    best.into_iter().map(|(k, (id, _))| (k, id)).collect()
+}
+
 fn all_winners(index: &Index) -> Vec<u32> {
     let mut ids: Vec<u32> = (0..index.resources.len() as u32).collect();
     ids.sort_by(|&a, &b| {
@@ -723,6 +756,85 @@ fn consider_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture_two_modules_shared_are() -> Index {
+        use serde_json::json;
+        let are = ResType::from_extension("are").unwrap().0;
+        let ifo = ResType::from_extension("ifo").unwrap().0;
+        let ncs = ResType::from_extension("ncs").unwrap().0;
+        let mut index: Index = serde_json::from_value(json!({
+            "schema": 3,
+            "root": "/game",
+            "kind": "install",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": [
+                "/game/modules/ebo_m12aa.mod",
+                "/game/modules/ebo_m40ad.mod",
+                "/game/modules/ebo_m12aa_s.rim",
+                "/game/Override/shared.ncs",
+                "/game/data/scripts.bif"
+            ],
+            "sources": [
+                {"kind":"module-mod","label":"ebo_m12aa.mod","precedence":100,"module_root":"ebo_m12aa"},
+                {"kind":"module-mod","label":"ebo_m40ad.mod","precedence":100,"module_root":"ebo_m40ad"},
+                {"kind":"module-rim","label":"ebo_m12aa_s.rim","precedence":200,"module_root":"ebo_m12aa"},
+                {"kind":"override","label":"Override","precedence":0,"module_root":null},
+                {"kind":"chitin","label":"scripts.bif","precedence":700,"module_root":null}
+            ],
+            "resources": [
+                {"resref":"module","restype":ifo,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"module","restype":ifo,"file":1,"offset":0,"size":1,"source":1},
+                {"resref":"m12aa","restype":are,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"m12aa","restype":are,"file":1,"offset":0,"size":1,"source":1},
+                {"resref":"local","restype":ncs,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"local","restype":ncs,"file":2,"offset":0,"size":1,"source":2},
+                {"resref":"shared","restype":ncs,"file":3,"offset":0,"size":1,"source":3},
+                {"resref":"shared","restype":ncs,"file":0,"offset":0,"size":1,"source":0}
+            ],
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+        index
+    }
+
+    #[test]
+    fn scoped_winners_keep_per_module_ifo_and_are() {
+        let index = fixture_two_modules_shared_are();
+        let winners = scoped_winners(&index);
+        let ifo = ResType::from_extension("ifo").unwrap();
+        let are = ResType::from_extension("are").unwrap();
+        let a = winners.get(&(Some("ebo_m12aa".into()), "module".into(), ifo)).copied();
+        let b = winners.get(&(Some("ebo_m40ad".into()), "module".into(), ifo)).copied();
+        assert!(a.is_some() && b.is_some() && a != b);
+        let are_a = winners.get(&(Some("ebo_m12aa".into()), "m12aa".into(), are)).copied();
+        let are_b = winners.get(&(Some("ebo_m40ad".into()), "m12aa".into(), are)).copied();
+        assert!(are_a.is_some() && are_b.is_some() && are_a != are_b);
+    }
+
+    #[test]
+    fn scoped_winners_mod_beats_rim_same_module() {
+        let index = fixture_two_modules_shared_are();
+        let winners = scoped_winners(&index);
+        let ncs = ResType::from_extension("ncs").unwrap();
+        let id = *winners
+            .get(&(Some("ebo_m12aa".into()), "local".into(), ncs))
+            .unwrap();
+        assert_eq!(index.source(&index.resources[id as usize]).label, "ebo_m12aa.mod");
+    }
+
+    #[test]
+    fn scoped_winners_override_beats_module_in_global_and_lookup() {
+        let index = fixture_two_modules_shared_are();
+        let winners = scoped_winners(&index);
+        let ncs = ResType::from_extension("ncs").unwrap();
+        // Global scope winner for "shared" is Override.
+        let id = *winners.get(&(None, "shared".into(), ncs)).unwrap();
+        assert_eq!(index.source(&index.resources[id as usize]).kind, kq_index::SourceKind::Override);
+        // Module still has its own scoped winner.
+        assert!(winners.contains_key(&(Some("ebo_m12aa".into()), "shared".into(), ncs)));
+    }
 
     #[test]
     fn tokens_ignore_self_and_stars() {
