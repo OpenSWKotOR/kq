@@ -86,10 +86,15 @@ fn ensure_dot(s: &str) -> String {
     }
 }
 
+pub enum EmitBody {
+    Built(Block),
+    Fallback(String),
+}
+
 pub fn emit_program(
     structs: &StructTable,
     globals: Option<&GlobalTable>,
-    protos: &[(SubId, SubInfo, Block)],
+    protos: &[(SubId, SubInfo, EmitBody)],
 ) -> String {
     let mut out = String::new();
 
@@ -145,11 +150,11 @@ pub fn emit_program(
         .iter()
         .filter(|(id, _, _)| matches!(id, SubId::User(_) | SubId::Main))
         .collect();
-    for (i, (id, info, block)) in bodies.iter().enumerate() {
+    for (i, (id, info, body)) in bodies.iter().enumerate() {
         if i != 0 {
             out.push('\n');
         }
-        emit_function(&mut out, *id, info, block, structs, globals);
+        emit_function(&mut out, *id, info, body, structs, globals);
     }
     out
 }
@@ -183,14 +188,19 @@ fn emit_function(
     out: &mut String,
     id: SubId,
     info: &SubInfo,
-    block: &Block,
+    body: &EmitBody,
     structs: &StructTable,
     globals: Option<&GlobalTable>,
 ) {
     emit_signature(out, id, info, structs);
     out.push_str(" {\n");
-    let locals = name_locals(block);
-    emit_block(out, block, structs, globals, &locals, 1);
+    match body {
+        EmitBody::Built(block) => {
+            let locals = name_locals(block);
+            emit_block(out, block, structs, globals, &locals, 1);
+        }
+        EmitBody::Fallback(text) => out.push_str(text),
+    }
     out.push_str("}\n");
 }
 
@@ -634,12 +644,12 @@ mod tests {
             (
                 SubId::User(1),
                 dummy_info(SubKind::User(1), Ty::Void, vec![]),
-                Block::default(),
+                EmitBody::Built(Block::default()),
             ),
             (
                 SubId::Main,
                 dummy_info(SubKind::Main, Ty::Void, vec![]),
-                Block::default(),
+                EmitBody::Built(Block::default()),
             ),
         ];
         let src = emit_program(&structs, Some(&globals), &protos);

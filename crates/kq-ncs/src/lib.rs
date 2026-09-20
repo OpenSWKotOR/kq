@@ -19,7 +19,8 @@ pub use ast::{BinOp, Block, ElseArm, Expr, Stmt, SwitchCase, UnaryOp};
 pub use build::{build_sub, BuildError};
 pub use cfg::{analyze, BlockEnd, Cfg};
 pub use cleanup::{cleanup, VarTable};
-pub use emit::{emit_program, format_float};
+pub use emit::{emit_program, format_float, EmitBody};
+pub use fallback::fallback_sub_body;
 pub use globals::{build_globals, GlobalTable, GlobalVar, GlobalsError};
 pub use kq_index::Game;
 pub use names::{name_from_action, NameGen};
@@ -85,6 +86,15 @@ pub fn decompile(ncs: &kq_format::ncs::Ncs, game: Game) -> Decompiled {
 fn decompile_inner(ncs: &kq_format::ncs::Ncs, game: Game) -> Decompiled {
     use std::collections::HashMap;
 
+    if ncs.instructions.is_empty() {
+        return Decompiled {
+            source: "/* kq: empty NCS */\n".into(),
+            complete: false,
+            warnings: Vec::new(),
+            subs: Vec::new(),
+        };
+    }
+
     let program = match split(&ncs.instructions) {
         Ok(program) => program,
         Err(err) => return fallback_decompile(ncs, &format!("split failed: {err:?}")),
@@ -136,13 +146,29 @@ fn decompile_inner(ncs: &kq_format::ncs::Ncs, game: Game) -> Decompiled {
     });
     ranges.push((SubId::Main, &program.main));
     for (id, range) in ranges {
-        let Some(info) = protos.get(&id) else {
-            return fallback_decompile(ncs, "missing inferred prototype");
+        let info = match protos.get(&id) {
+            Some(info) => {
+                let mut info = info.clone();
+                if id == SubId::Main && program.conditional_header {
+                    info.ret = Ty::Int;
+                }
+                info
+            }
+            None => synthetic_sub_info(id, range),
         };
         let Some(cfg) = cfgs.get(&id) else {
-            return fallback_decompile(ncs, "missing CFG");
+            push_fallback_sub(
+                &mut reports,
+                &mut items,
+                &ncs.instructions,
+                id,
+                range,
+                info,
+                "missing CFG".into(),
+            );
+            continue;
         };
-        match build_sub(&ncs.instructions, info, cfg, &globals, &protos, game) {
+        match build_sub(&ncs.instructions, &info, cfg, &globals, &protos, game) {
             Ok((mut block, mut vars, sub_structs)) => {
                 cleanup::cleanup(&mut block, &mut vars);
                 match &mut structs {
@@ -155,21 +181,26 @@ fn decompile_inner(ncs: &kq_format::ncs::Ncs, game: Game) -> Decompiled {
                     end: range.end_pos,
                     status: SubStatus::Ok,
                 });
-                let mut info = info.clone();
-                if id == SubId::Main && program.conditional_header {
-                    info.ret = Ty::Int;
-                }
-                items.push((id, info, block));
+                items.push((id, info, emit::EmitBody::Built(block)));
             }
             Err(err) => {
-                return fallback_decompile(ncs, &format!("build failed at {id:?}: {err:?}"));
+                push_fallback_sub(
+                    &mut reports,
+                    &mut items,
+                    &ncs.instructions,
+                    id,
+                    range,
+                    info,
+                    format_build_error(&err),
+                );
             }
         }
     }
 
-    let Some(structs) = structs else {
+    if items.is_empty() {
         return fallback_decompile(ncs, "no functions emitted");
-    };
+    }
+    let structs = structs.unwrap_or_default();
     let globals_ref = program.globals.as_ref().map(|_| &globals);
     let source = emit::emit_program(&structs, globals_ref, &items);
     if source.is_empty() {
@@ -181,24 +212,65 @@ fn decompile_inner(ncs: &kq_format::ncs::Ncs, game: Game) -> Decompiled {
         });
         return fallback_decompile(ncs, "no functions emitted");
     }
+    let complete = reports.iter().all(|s| matches!(s.status, SubStatus::Ok))
+        && warnings.iter().all(|w| w.severity != Severity::Error);
     Decompiled {
         source,
-        complete: true,
+        complete,
         warnings,
         subs: reports,
     }
 }
 
-fn fallback_decompile(ncs: &kq_format::ncs::Ncs, reason: &str) -> Decompiled {
-    let disasm = fallback::disasm_lines(ncs);
-    let mut indented = String::new();
-    for line in disasm.lines() {
-        indented.push_str("     ");
-        indented.push_str(line);
-        indented.push('\n');
+fn push_fallback_sub(
+    reports: &mut Vec<SubReport>,
+    items: &mut Vec<(SubId, SubInfo, emit::EmitBody)>,
+    ins: &[kq_format::ncs::Instruction],
+    id: SubId,
+    range: &SubRange,
+    info: SubInfo,
+    reason: String,
+) {
+    let body = fallback::fallback_sub_body(ins, range.range.clone(), &reason);
+    reports.push(SubReport {
+        id,
+        start: range.start_pos,
+        end: range.end_pos,
+        status: SubStatus::Fallback(reason),
+    });
+    items.push((id, info, emit::EmitBody::Fallback(body)));
+}
+
+fn format_build_error(err: &BuildError) -> String {
+    match err {
+        BuildError::StackUnderflow { pos } => format!("unbalanced stack at {pos:#x}"),
+        BuildError::BadOperand { pos } => format!("bad operand at {pos:#x}"),
+        BuildError::BadJump { pos } => format!("bad jump at {pos:#x}"),
+        BuildError::Unsupported { pos, op } => format!("unsupported {op} at {pos:#x}"),
     }
-    let source =
-        format!("void main() {{\n\t/* kq: {reason}.\n\t   Disassembly:\n{indented}\t*/\n}}\n");
+}
+
+fn synthetic_sub_info(id: SubId, range: &SubRange) -> SubInfo {
+    SubInfo {
+        range: range.range.clone(),
+        start_pos: range.start_pos,
+        kind: match id {
+            SubId::Header | SubId::Main => SubKind::Main,
+            SubId::Globals => SubKind::Globals,
+            SubId::User(n) => SubKind::User(n),
+        },
+        ret: Ty::Void,
+        ret_slots: 0,
+        ret_depth: 0,
+        param_count: 0,
+        params: Vec::new(),
+        params_typed: false,
+    }
+}
+
+fn fallback_decompile(ncs: &kq_format::ncs::Ncs, reason: &str) -> Decompiled {
+    let body = fallback::fallback_sub_body(&ncs.instructions, 0..ncs.instructions.len(), reason);
+    let source = format!("void main() {{\n{body}}}\n");
     let (start, end) = ncs
         .instructions
         .first()
@@ -254,5 +326,89 @@ mod tests {
         let d = decompile(&minimal_main_ncs(), Game::K1);
         assert!(!d.source.is_empty());
         assert!(d.source.contains("/*") || d.source.contains("void") || d.source.contains("RETN"));
+    }
+
+    fn inst(
+        offset: u32,
+        op: &'static str,
+        args: Vec<kq_format::ncs::Arg>,
+    ) -> kq_format::ncs::Instruction {
+        kq_format::ncs::Instruction {
+            offset,
+            op,
+            args,
+            routine: None,
+            routine_name: None,
+            argc: None,
+        }
+    }
+
+    /// Header JSR → empty main; user sub is ADDII with an empty stack (build fails).
+    fn ncs_broken_user_ok_main() -> Ncs {
+        use kq_format::ncs::Arg;
+        Ncs {
+            declared_size: 27,
+            instructions: vec![
+                inst(13, "JSR", vec![Arg::Jump(21)]),
+                inst(19, "RETN", vec![]),
+                inst(21, "RETN", vec![]),
+                inst(23, "ADDII", vec![]),
+                inst(25, "RETN", vec![]),
+            ],
+        }
+    }
+
+    #[test]
+    fn build_failure_falls_back_per_sub() {
+        let d = decompile(&ncs_broken_user_ok_main(), Game::K1);
+        assert!(
+            !d.complete,
+            "complete={}; source=\n{}",
+            d.complete, d.source
+        );
+        assert!(
+            d.source.contains("/* kq: could not decompile"),
+            "{}",
+            d.source
+        );
+        assert!(d.source.contains("Disassembly:"), "{}", d.source);
+        assert!(
+            d.subs
+                .iter()
+                .any(|s| matches!(s.status, SubStatus::Fallback(_))),
+            "{:#?}",
+            d.subs
+        );
+        assert!(
+            d.subs
+                .iter()
+                .any(|s| s.id == SubId::Main && s.status == SubStatus::Ok),
+            "main should still be Ok; subs={:#?}",
+            d.subs
+        );
+        assert!(d.source.contains("void main()"), "{}", d.source);
+        assert!(
+            d.source.contains("sub1"),
+            "prototype missing:\n{}",
+            d.source
+        );
+        assert!(
+            !d.source.contains("__unknown"),
+            "placeholder identifier:\n{}",
+            d.source
+        );
+    }
+
+    #[test]
+    fn empty_ncs_is_comment_not_err() {
+        let d = decompile(
+            &Ncs {
+                declared_size: 13,
+                instructions: Vec::new(),
+            },
+            Game::K1,
+        );
+        assert!(!d.complete);
+        assert_eq!(d.source.trim(), "/* kq: empty NCS */");
     }
 }

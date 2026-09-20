@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use kq_format::ncs::{Arg, Instruction, Ncs};
 
 pub fn format_ins(ins: &Instruction) -> String {
@@ -38,4 +40,20 @@ pub fn disasm_lines(ncs: &Ncs) -> String {
         .map(format_ins)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Tab-indented comment body for a subroutine that could not be built.
+pub fn fallback_sub_body(ins: &[Instruction], range: Range<usize>, reason: &str) -> String {
+    let mut out = String::from("\t/* kq: could not decompile this subroutine (reason: ");
+    out.push_str(reason);
+    out.push_str(").\n\t   Disassembly:\n");
+    if let Some(slice) = ins.get(range) {
+        for inst in slice {
+            out.push_str("\t     ");
+            out.push_str(&format_ins(inst));
+            out.push('\n');
+        }
+    }
+    out.push_str("\t*/\n");
+    out
 }
