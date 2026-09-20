@@ -33,6 +33,8 @@ const SOURCE_EXTS: &[&str] = &["nss"];
 
 /// Area/module entry files. A module *folder* (`end_m01aa`) is not a ResRef;
 /// the IFO is always `module.ifo` and the GIT/ARE are often `m01aa.*`.
+/// Chitin `lyt`/`vis` stay out of `module_entry_ids` until Task 5 (synthetic ARE edges).
+#[allow(dead_code)]
 const MODULE_ENTRY_EXTS: &[&str] = &["ifo", "are", "git", "lyt", "vis", "pth"];
 
 /// Engine-opened talk files and the include the compiler always sees.
@@ -239,9 +241,15 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
         .map(|s| s.to_ascii_lowercase())
         .collect();
 
-    let winners = all_winners(index);
-    let by_resref = winners_by_resref(index, &winners);
-    let module_entries = module_entry_ids(index, &winners);
+    let winners_map = scoped_winners(index);
+    let winners: Vec<u32> = {
+        let mut v: Vec<u32> = winners_map.values().copied().collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+    let by_resref = winners_by_resref(index, &winners); // temporary; Task 4 replaces resolution
+    let module_entries = module_entry_ids(index, &winners_map);
 
     let mut scan_ids = winners.clone();
     scan_ids.retain(|&i| is_scan_source(index.resources[i as usize].restype));
@@ -378,6 +386,7 @@ pub fn scoped_winners(index: &Index) -> HashMap<(Scope, String, ResType), u32> {
     best.into_iter().map(|(k, (id, _))| (k, id)).collect()
 }
 
+#[allow(dead_code)] // retained until Task 4 replaces global BFS resolution
 fn all_winners(index: &Index) -> Vec<u32> {
     let mut ids: Vec<u32> = (0..index.resources.len() as u32).collect();
     ids.sort_by(|&a, &b| {
@@ -405,20 +414,20 @@ fn winners_by_resref(index: &Index, winners: &[u32]) -> HashMap<String, Vec<u32>
     map
 }
 
-fn module_entry_ids(index: &Index, winners: &[u32]) -> HashMap<String, Vec<u32>> {
+fn module_entry_ids(
+    index: &Index,
+    winners: &HashMap<(Scope, String, ResType), u32>,
+) -> HashMap<String, Vec<u32>> {
+    let _ = index;
+    const ENTRY: &[&str] = &["ifo", "are", "git", "pth"]; // lyt/vis chitin handled in Task 5
     let mut map: HashMap<String, Vec<u32>> = HashMap::new();
-    for &i in winners {
-        let r = &index.resources[i as usize];
-        let Some(ext) = r.restype.extension() else {
-            continue;
-        };
-        if !MODULE_ENTRY_EXTS.contains(&ext) {
+    for ((scope, _resref, restype), &id) in winners {
+        let Some(root) = scope.as_deref() else { continue };
+        let Some(ext) = restype.extension() else { continue };
+        if !ENTRY.contains(&ext) {
             continue;
         }
-        let Some(root) = index.source(r).module_root.as_deref() else {
-            continue;
-        };
-        map.entry(root.to_ascii_lowercase()).or_default().push(i);
+        map.entry(root.to_string()).or_default().push(id);
     }
     map
 }
@@ -457,8 +466,26 @@ fn seed_ids(
     let push_module = |name: &str, labels: &mut Vec<String>, ids: &mut Vec<u32>| {
         let name = name.to_ascii_lowercase();
         if let Some(list) = module_entries.get(&name) {
-            labels.push(name);
+            labels.push(name.clone());
             ids.extend(list.iter().copied());
+            return;
+        }
+        let mut any = false;
+        for (i, r) in index.resources.iter().enumerate() {
+            if index
+                .source(r)
+                .module_root
+                .as_deref()
+                .is_some_and(|m| m.eq_ignore_ascii_case(&name))
+            {
+                ids.push(i as u32);
+                any = true;
+            }
+        }
+        if any {
+            labels.push(name);
+        } else {
+            crate::output::warn(format!("seed module `{name}` unresolved (no resources)"));
         }
     };
 
@@ -480,6 +507,19 @@ fn seed_ids(
             for name in ini_starting_modules(&index.root) {
                 push_module(&name, &mut labels, &mut ids);
                 push_resref(&name, &mut labels, &mut ids);
+            }
+            // Warn once per missing hardcoded resref seed.
+            let expected: Vec<&str> = ENGINE_ALWAYS
+                .iter()
+                .chain(ENGINE_2DAS.iter())
+                .chain(K1_SCRIPTS.iter())
+                .copied()
+                .collect();
+            for name in expected {
+                let key = name.to_ascii_lowercase();
+                if !labels.iter().any(|l| l == &key) {
+                    crate::output::warn(format!("seed `{key}` unresolved (no winner)"));
+                }
             }
         }
         RootKind::Capsule | RootKind::Folder | RootKind::File => {
@@ -797,6 +837,33 @@ mod tests {
         .unwrap();
         index.reindex();
         index
+    }
+
+    #[test]
+    fn ebo_m40ad_seed_survives_colliding_m12aa_are() {
+        let index = fixture_two_modules_shared_are();
+        let winners_map = scoped_winners(&index);
+        let module_entries = module_entry_ids(&index, &winners_map);
+        assert!(module_entries.contains_key("ebo_m12aa"));
+        assert!(module_entries.contains_key("ebo_m40ad"));
+
+        let catalog: HashSet<String> = index.resources.iter().map(|r| r.resref.clone()).collect();
+        let winners: Vec<u32> = winners_map.values().copied().collect();
+        let by_resref = winners_by_resref(&index, &winners);
+        let (labels, ids) = seed_ids(&index, &catalog, &by_resref, &module_entries);
+        assert!(
+            labels.iter().any(|s| s == "ebo_m40ad"),
+            "labels={labels:?}"
+        );
+        assert!(!ids.is_empty());
+        // At least one seed id must belong to ebo_m40ad's module source.
+        assert!(ids.iter().any(|&i| {
+            index
+                .source(&index.resources[i as usize])
+                .module_root
+                .as_deref()
+                == Some("ebo_m40ad")
+        }));
     }
 
     #[test]
