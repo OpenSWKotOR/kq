@@ -155,7 +155,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let mut catalog: Vec<unused::Row<'_>> = in_scope
         .iter()
         .map(|&id| {
-            let status = if !winners.contains(&id) {
+            let status = if live::is_shadowed(&index, id) {
                 "shadowed"
             } else if leftover_set.contains(&id) {
                 "leftover"
@@ -288,7 +288,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
             let shadowed: Vec<u32> = in_scope
                 .iter()
                 .copied()
-                .filter(|i| !winners.contains(i))
+                .filter(|&i| live::is_shadowed(&index, i))
                 .collect();
             writeln!(w)?;
             writeln!(

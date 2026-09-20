@@ -423,7 +423,6 @@ pub fn shadowed_by(index: &Index, id: u32) -> Option<u32> {
     Some(winner)
 }
 
-#[allow(dead_code)]
 pub fn is_shadowed(index: &Index, id: u32) -> bool {
     shadowed_by(index, id).is_some()
 }

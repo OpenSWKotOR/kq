@@ -104,7 +104,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         all_candidates
             .iter()
             .copied()
-            .filter(|i| !winners.contains(i))
+            .filter(|&i| live::is_shadowed(&index, i))
             .collect()
     } else {
         Vec::new()
@@ -197,7 +197,7 @@ pub fn candidate_ids(
     let winners = live::scoped_winner_id_set(index);
     let mut candidates = filter.select(index, "")?;
     if !include_shadowed {
-        candidates.retain(|&i| winners.contains(&i));
+        candidates.retain(|&i| winners.contains(&i) && !live::is_shadowed(index, i));
     }
     if no_assets && filter.types.is_empty() {
         candidates.retain(|&i| !live::is_asset(index.resources[i as usize].restype));
@@ -344,6 +344,33 @@ mod tests {
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
 
+    fn fixture_module_copy_shadowed_by_override() -> Index {
+        let ncs = ResType::from_extension("ncs").unwrap().0;
+        let mut index: Index = serde_json::from_value(json!({
+            "schema": 3,
+            "root": "/game",
+            "kind": "install",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": [
+                "/game/modules/tar_m03aa.mod",
+                "/game/Override/shared.ncs"
+            ],
+            "sources": [
+                {"kind":"module-mod","label":"tar_m03aa.mod","precedence":100,"module_root":"tar_m03aa"},
+                {"kind":"override","label":"Override","precedence":0,"module_root":null}
+            ],
+            "resources": [
+                {"resref":"shared","restype":ncs,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"shared","restype":ncs,"file":1,"offset":0,"size":1,"source":1}
+            ],
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+        index
+    }
+
     fn fixture_mod_and_rim() -> Index {
         let ncs = ResType::from_extension("ncs").unwrap().0;
         let mut index: Index = serde_json::from_value(json!({
@@ -381,6 +408,48 @@ mod tests {
         let winners = live::scoped_winner_id_set(&index);
         assert_eq!(ids.len(), 2);
         assert!(ids.iter().all(|i| winners.contains(i)));
+    }
+
+    #[test]
+    fn candidate_ids_default_excludes_module_copy_shadowed_by_override() {
+        let index = fixture_module_copy_shadowed_by_override();
+        let module_copy_id = 0u32;
+        let override_id = 1u32;
+        assert!(live::is_shadowed(&index, module_copy_id));
+        assert!(!live::is_shadowed(&index, override_id));
+
+        let default_ids = candidate_ids(&index, &Filter::default(), false, false).unwrap();
+        assert!(
+            !default_ids.contains(&module_copy_id),
+            "override-shadowed module copy must not be a default candidate"
+        );
+        assert!(default_ids.contains(&override_id));
+
+        let with_shadowed = candidate_ids(&index, &Filter::default(), false, true).unwrap();
+        assert!(with_shadowed.contains(&module_copy_id));
+
+        let graph = LiveGraph {
+            catalog: HashSet::new(),
+            seeds: vec![],
+            seed_ids: vec![],
+            reachable: HashSet::new(),
+            used_ids: HashSet::new(),
+            parent: HashMap::new(),
+            edges: HashMap::new(),
+            missing: HashMap::new(),
+            module_entries: HashMap::new(),
+            used: HashSet::new(),
+            used_strrefs: HashSet::new(),
+            tlk: vec![],
+            scanned: 0,
+        };
+        let winners = live::scoped_winner_id_set(&index);
+        let row = resource_row(&index, module_copy_id, &graph, &winners, "shadowed");
+        assert_eq!(row.status, "shadowed");
+        assert_eq!(
+            row.shadowed_by.as_deref(),
+            Some("Override/shared.ncs")
+        );
     }
 
     #[test]
