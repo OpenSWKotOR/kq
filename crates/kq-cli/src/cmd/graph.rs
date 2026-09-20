@@ -58,6 +58,14 @@ pub struct Args {
     /// Stop after this many rows (`--text` mode only). 0 means no limit.
     #[arg(short = 'n', long, default_value_t = 0, value_name = "N")]
     limit: usize,
+
+    /// ResRef or module root to show (parent chain + outgoing existing/missing).
+    #[arg(value_name = "NAME")]
+    name: Option<String>,
+
+    /// Include missing ResRef tokens in output.
+    #[arg(long)]
+    missing: bool,
 }
 
 #[derive(Serialize)]
@@ -94,6 +102,12 @@ struct Section<'a> {
 }
 
 #[derive(Serialize)]
+struct MissingHit {
+    path: String,
+    token: String,
+}
+
+#[derive(Serialize)]
 struct Report<'a> {
     scanned: usize,
     catalog_resrefs: usize,
@@ -103,12 +117,38 @@ struct Report<'a> {
     used: Section<'a>,
     leftovers: Section<'a>,
     catalog: Vec<unused::Row<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    missing: Vec<MissingHit>,
+}
+
+#[derive(Serialize)]
+struct NamedNode<'a> {
+    id: u32,
+    path: String,
+    resref: &'a str,
+    #[serde(rename = "type")]
+    restype: String,
+    module: Option<&'a str>,
+    parent_chain: Vec<String>,
+    edges: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    missing: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct NamedReport<'a> {
+    name: &'a str,
+    nodes: Vec<NamedNode<'a>>,
 }
 
 pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let _ = args.winners_only;
     let index = ctx.index()?;
     let graph = live::build(&index)?;
+
+    if let Some(name) = args.name.as_deref() {
+        return show_named(ctx, &index, &graph, name, true);
+    }
 
     let in_scope = unused::candidate_ids(&index, &args.filter, args.no_assets, args.shadowed)?;
     let winners = unused::winner_set(&index, &in_scope);
@@ -180,6 +220,15 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         .map(|&id| unused::resource_row(&index, id, &graph, &winners, "leftover"))
         .collect();
 
+    let missing_hits = if args.missing {
+        missing_pairs(&index, &graph)
+            .into_iter()
+            .map(|(path, token)| MissingHit { path, token })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     if ctx.out.json {
         let report = Report {
             scanned: graph.scanned,
@@ -232,6 +281,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
                 },
             },
             catalog,
+            missing: missing_hits,
         };
         ctx.out.json_value(&report)?;
         return Ok(exit::OK);
@@ -299,6 +349,18 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
             for &i in &shadowed {
                 writeln!(w, "  {}", index.virt_path(&index.resources[i as usize]))?;
             }
+        }
+    }
+
+    if args.missing && !missing_hits.is_empty() {
+        writeln!(w)?;
+        writeln!(
+            w,
+            "{}",
+            o.bold(&format!("MISSING — {} unmatched ResRefs", missing_hits.len()))
+        )?;
+        for hit in &missing_hits {
+            writeln!(w, "  {}  {}", hit.path, hit.token)?;
         }
     }
 
@@ -573,6 +635,139 @@ fn apply_limit_slice<T>(rows: &[T], limit: usize) -> &[T] {
     }
 }
 
+fn normalize_name(name: &str) -> String {
+    let name = name.to_ascii_lowercase();
+    match name.rsplit_once('.') {
+        Some((base, ext)) if kq_format::ResType::from_extension(ext).is_some() => base.to_string(),
+        _ => name,
+    }
+}
+
+fn ids_for_name(index: &kq_index::Index, graph: &LiveGraph, name: &str) -> Vec<u32> {
+    let name = normalize_name(name);
+    let mut ids: Vec<u32> = live::scoped_winners(index)
+        .into_iter()
+        .filter(|((_, rr, _), _)| *rr == name)
+        .map(|(_, id)| id)
+        .collect();
+    if ids.is_empty() {
+        if let Some(list) = graph.module_entries.get(&name) {
+            ids.extend(list.iter().copied());
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+fn parent_chain(parent: &HashMap<u32, u32>, id: u32) -> Vec<u32> {
+    let mut ids = vec![id];
+    let mut cur = id;
+    let mut seen = HashSet::from([id]);
+    while let Some(&p) = parent.get(&cur) {
+        if !seen.insert(p) {
+            break;
+        }
+        ids.push(p);
+        cur = p;
+    }
+    ids
+}
+
+fn missing_pairs(index: &kq_index::Index, graph: &LiveGraph) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    for (&id, tokens) in &graph.missing {
+        if (id as usize) >= index.resources.len() {
+            continue;
+        }
+        let path = index.virt_path(&index.resources[id as usize]);
+        let mut toks: Vec<_> = tokens.iter().cloned().collect();
+        toks.sort();
+        for tok in toks {
+            pairs.push((path.clone(), tok));
+        }
+    }
+    pairs.sort();
+    pairs
+}
+
+fn sorted_set(set: Option<&HashSet<String>>) -> Vec<String> {
+    set.map(|s| {
+        let mut v: Vec<_> = s.iter().cloned().collect();
+        v.sort();
+        v
+    })
+    .unwrap_or_default()
+}
+
+fn show_named(
+    ctx: &Ctx,
+    index: &kq_index::Index,
+    graph: &LiveGraph,
+    name: &str,
+    show_missing: bool,
+) -> Result<i32> {
+    let ids = ids_for_name(index, graph, name);
+    if ids.is_empty() {
+        if !ctx.out.json {
+            eprintln!("kq: no resource or module named `{name}`");
+        }
+        return Ok(exit::NO_MATCH);
+    }
+
+    let mut nodes = Vec::new();
+    for id in ids {
+        let r = &index.resources[id as usize];
+        let source = index.source(r);
+        let chain_paths: Vec<String> = parent_chain(&graph.parent, id)
+            .into_iter()
+            .map(|i| index.virt_path(&index.resources[i as usize]))
+            .collect();
+        nodes.push(NamedNode {
+            id,
+            path: index.virt_path(r),
+            resref: &r.resref,
+            restype: r.restype.to_string(),
+            module: source.module_root.as_deref(),
+            parent_chain: chain_paths,
+            edges: sorted_set(graph.edges.get(&id)),
+            missing: if show_missing {
+                sorted_set(graph.missing.get(&id))
+            } else {
+                Vec::new()
+            },
+        });
+    }
+
+    if ctx.out.json {
+        ctx.out.json_value(&NamedReport { name, nodes })?;
+        return Ok(exit::OK);
+    }
+
+    let stdout = std::io::stdout();
+    let mut w = BufWriter::new(stdout.lock());
+    let o = &ctx.out;
+    writeln!(w, "{}", o.bold(name))?;
+    for node in &nodes {
+        writeln!(w, "  {}", o.accent(&node.path))?;
+        if !node.parent_chain.is_empty() {
+            writeln!(
+                w,
+                "{}",
+                o.dim(&format!("    parent  {}", node.parent_chain.join(" ← ")))
+            )?;
+        }
+        if !node.edges.is_empty() {
+            writeln!(w, "    edges   {}", node.edges.join(", "))?;
+        }
+        if show_missing && !node.missing.is_empty() {
+            writeln!(w, "    missing {}", node.missing.join(", "))?;
+        }
+    }
+    w.flush()?;
+    Ok(exit::OK)
+}
+
 fn one_line(s: &str, max: usize) -> String {
     let flat: String = s
         .chars()
@@ -590,4 +785,86 @@ fn one_line(s: &str, max: usize) -> String {
         out.push(c);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kq_format::ResType;
+    use kq_index::Index;
+    use serde_json::json;
+
+    fn fixture_named_script() -> (Index, LiveGraph) {
+        let ncs = ResType::from_extension("ncs").unwrap().0;
+        let ifo = ResType::from_extension("ifo").unwrap().0;
+        let mut index: Index = serde_json::from_value(json!({
+            "schema": 3,
+            "root": "/game",
+            "kind": "install",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": ["/game/modules/end_m01aa.mod"],
+            "sources": [
+                {"kind":"module-mod","label":"end_m01aa.mod","precedence":100,"module_root":"end_m01aa"}
+            ],
+            "resources": [
+                {"resref":"module","restype":ifo,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"k_ai_master","restype":ncs,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"k_sup_gohawk","restype":ncs,"file":0,"offset":0,"size":1,"source":0}
+            ],
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+
+        let mut parent = HashMap::new();
+        parent.insert(2u32, 1u32);
+        let mut edges = HashMap::new();
+        edges.insert(2u32, HashSet::from(["k_ai_master".into()]));
+        let mut missing = HashMap::new();
+        missing.insert(2u32, HashSet::from(["k_rapidtransit".into()]));
+        let mut module_entries = HashMap::new();
+        module_entries.insert("end_m01aa".into(), vec![0u32]);
+
+        let graph = LiveGraph {
+            catalog: HashSet::from(["module".into(), "k_ai_master".into(), "k_sup_gohawk".into()]),
+            seeds: vec!["end_m01aa".into()],
+            seed_ids: vec![0],
+            reachable: HashSet::new(),
+            used_ids: HashSet::from([0, 1, 2]),
+            parent,
+            edges,
+            missing,
+            module_entries,
+            used: HashSet::new(),
+            used_strrefs: HashSet::new(),
+            tlk: vec![],
+            scanned: 3,
+        };
+        (index, graph)
+    }
+
+    #[test]
+    fn named_node_lists_parent_and_missing() {
+        let (index, graph) = fixture_named_script();
+        let ids = ids_for_name(&index, &graph, "k_sup_gohawk");
+        assert_eq!(ids, vec![2]);
+        let chain = parent_chain(&graph.parent, 2);
+        assert_eq!(chain, vec![2, 1]);
+        assert!(graph.missing.get(&2).unwrap().contains("k_rapidtransit"));
+        assert!(graph.edges.get(&2).unwrap().contains("k_ai_master"));
+        let pairs = missing_pairs(&index, &graph);
+        assert!(
+            pairs
+                .iter()
+                .any(|(path, tok)| path.contains("k_sup_gohawk") && tok == "k_rapidtransit")
+        );
+    }
+
+    #[test]
+    fn named_module_root_uses_module_entries() {
+        let (index, graph) = fixture_named_script();
+        assert_eq!(ids_for_name(&index, &graph, "end_m01aa"), vec![0]);
+        assert!(ids_for_name(&index, &graph, "no_such").is_empty());
+    }
 }

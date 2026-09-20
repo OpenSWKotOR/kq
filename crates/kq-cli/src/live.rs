@@ -218,11 +218,9 @@ pub struct LiveGraph {
     pub parent: HashMap<u32, u32>,
     /// ResRef / module-root tokens each used resource mentions.
     pub edges: HashMap<u32, HashSet<String>>,
-    /// Mentioned tokens with no scoped winner (filled by Task 8).
-    #[allow(dead_code)]
+    /// ResRef-shaped tokens with no catalog / module-root match.
     pub missing: HashMap<u32, HashSet<String>>,
     /// Module-root → scoped entry resource ids (ifo/are/git/pth).
-    #[allow(dead_code)]
     pub module_entries: HashMap<String, Vec<u32>>,
     /// ResRefs of `used_ids`, plus VO names on used talk-table rows.
     pub used: HashSet<String>,
@@ -266,7 +264,7 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
         scan_ids.len()
     ));
 
-    let hits = Mutex::new(Vec::<(u32, HashSet<String>, HashSet<i64>)>::new());
+    let hits = Mutex::new(Vec::<(u32, HashSet<String>, HashSet<i64>, HashSet<String>)>::new());
     scan_ids.par_iter().for_each(|&i| {
         let r = &index.resources[i as usize];
         let Ok(bytes) = read::read(index, r) else {
@@ -277,6 +275,7 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
         };
         let mut mentions = HashSet::new();
         let mut strrefs = HashSet::new();
+        let mut missing = HashSet::new();
         collect(
             &decoded,
             &catalog,
@@ -286,22 +285,27 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
             strref_mode(r.restype),
             &mut mentions,
             &mut strrefs,
+            &mut missing,
         );
-        if !mentions.is_empty() || !strrefs.is_empty() {
+        if !mentions.is_empty() || !strrefs.is_empty() || !missing.is_empty() {
             hits.lock()
                 .expect("live scan lock")
-                .push((i, mentions, strrefs));
+                .push((i, mentions, strrefs, missing));
         }
     });
 
     let mut edges: HashMap<u32, HashSet<String>> = HashMap::new();
     let mut strrefs_by: HashMap<u32, HashSet<i64>> = HashMap::new();
-    for (id, mentions, strrefs) in hits.into_inner().expect("live scan lock") {
+    let mut missing_by: HashMap<u32, HashSet<String>> = HashMap::new();
+    for (id, mentions, strrefs, missing) in hits.into_inner().expect("live scan lock") {
         if !mentions.is_empty() {
             edges.insert(id, mentions);
         }
         if !strrefs.is_empty() {
             strrefs_by.insert(id, strrefs);
+        }
+        if !missing.is_empty() {
+            missing_by.insert(id, missing);
         }
     }
     add_are_layout_edges(index, &winners_map, &mut edges);
@@ -344,7 +348,7 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
         used_ids,
         parent,
         edges,
-        missing: HashMap::new(),
+        missing: missing_by,
         module_entries,
         used,
         used_strrefs,
@@ -756,6 +760,7 @@ fn collect(
     mode: StrRefMode,
     mentions: &mut HashSet<String>,
     strrefs: &mut HashSet<i64>,
+    missing: &mut HashSet<String>,
 ) {
     match decoded {
         Decoded::Value(v) => walk_json(
@@ -768,10 +773,19 @@ fn collect(
                 mode,
                 mentions,
                 strrefs,
+                missing,
             },
             None,
         ),
-        Decoded::Text(s) => take_tokens(s, known, module_roots, self_ref, self_ext, mentions),
+        Decoded::Text(s) => take_tokens(
+            s,
+            known,
+            module_roots,
+            self_ref,
+            self_ext,
+            mentions,
+            Some(missing),
+        ),
         Decoded::Opaque { .. } => {}
     }
 }
@@ -784,6 +798,7 @@ struct Walk<'a> {
     mode: StrRefMode,
     mentions: &'a mut HashSet<String>,
     strrefs: &'a mut HashSet<i64>,
+    missing: &'a mut HashSet<String>,
 }
 
 fn walk_json(v: &J, w: &mut Walk<'_>, key: Option<&str>) {
@@ -796,6 +811,7 @@ fn walk_json(v: &J, w: &mut Walk<'_>, key: Option<&str>) {
                 w.self_ref,
                 w.self_ext,
                 w.mentions,
+                Some(w.missing),
             );
             if matches!(w.mode, StrRefMode::TwoDa) && key.is_some_and(is_strref_column) {
                 if let Some(n) = parse_strref(s) {
@@ -870,6 +886,7 @@ fn take_tokens(
     self_ref: &str,
     self_ext: Option<&str>,
     out: &mut HashSet<String>,
+    mut missing: Option<&mut HashSet<String>>,
 ) {
     let lower = s.to_ascii_lowercase();
     let mut start = None;
@@ -879,11 +896,27 @@ fn take_tokens(
                 start = Some(i);
             }
         } else if let Some(st) = start.take() {
-            consider_token(&lower[st..i], known, module_roots, self_ref, self_ext, out);
+            consider_token(
+                &lower[st..i],
+                known,
+                module_roots,
+                self_ref,
+                self_ext,
+                out,
+                missing.as_deref_mut(),
+            );
         }
     }
     if let Some(st) = start {
-        consider_token(&lower[st..], known, module_roots, self_ref, self_ext, out);
+        consider_token(
+            &lower[st..],
+            known,
+            module_roots,
+            self_ref,
+            self_ext,
+            out,
+            missing,
+        );
     }
 }
 
@@ -894,6 +927,7 @@ fn consider_token(
     self_resref: &str,
     self_ext: Option<&str>,
     out: &mut HashSet<String>,
+    missing: Option<&mut HashSet<String>>,
 ) {
     if tok.is_empty() || tok == "****" {
         return;
@@ -928,6 +962,12 @@ fn consider_token(
             && (known.contains(base) || module_roots.contains(base))
         {
             out.insert(base.to_string());
+            return;
+        }
+    }
+    if let Some(m) = missing {
+        if tok.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            m.insert(tok.to_string());
         }
     }
 }
@@ -1063,6 +1103,7 @@ mod tests {
             "n_bastila",
             Some("utc"),
             &mut out,
+            None,
         );
         assert!(out.contains("k_ai_master"));
         assert!(!out.contains("n_bastila"));
@@ -1116,7 +1157,15 @@ mod tests {
         let known = HashSet::from(["m01aa".into()]);
         let roots = HashSet::new();
         let mut out = HashSet::new();
-        take_tokens("m01aa.lyt", &known, &roots, "m01aa", Some("are"), &mut out);
+        take_tokens(
+            "m01aa.lyt",
+            &known,
+            &roots,
+            "m01aa",
+            Some("are"),
+            &mut out,
+            None,
+        );
         assert!(out.contains("m01aa"));
     }
 
@@ -1349,6 +1398,7 @@ mod tests {
             "k_sup_gohawk",
             Some("ncs"),
             &mut out,
+            None,
         );
         assert!(out.contains("end_m01aa"));
     }
@@ -1365,6 +1415,7 @@ mod tests {
             "k_ai_master",
             Some("ncs"),
             &mut out,
+            None,
         );
         assert!(out.contains("n_bastila"));
     }
@@ -1386,6 +1437,7 @@ mod tests {
         let roots = HashSet::new();
         let mut mentions = HashSet::new();
         let mut strrefs = HashSet::new();
+        let mut missing = HashSet::new();
         let v = serde_json::json!({"name": "k_ai_master", "offset": 0});
         walk_json(
             &v,
@@ -1397,6 +1449,7 @@ mod tests {
                 mode: StrRefMode::None,
                 mentions: &mut mentions,
                 strrefs: &mut strrefs,
+                missing: &mut missing,
             },
             None,
         );
@@ -1410,8 +1463,48 @@ mod tests {
         let known = HashSet::from(["3".into()]);
         let roots = HashSet::new();
         let mut out = HashSet::new();
-        consider_token("3", &known, &roots, "x", None, &mut out);
+        consider_token("3", &known, &roots, "x", None, &mut out, None);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn collect_records_missing_resref_shaped_tokens() {
+        let known = HashSet::new();
+        let roots = HashSet::new();
+        let mut mentions = HashSet::new();
+        let mut missing = HashSet::new();
+        take_tokens(
+            "StartNewModule(k_rapidtransit)",
+            &known,
+            &roots,
+            "k_sup_gohawk",
+            Some("ncs"),
+            &mut mentions,
+            Some(&mut missing),
+        );
+        assert!(mentions.is_empty());
+        assert!(missing.contains("k_rapidtransit"));
+    }
+
+    #[test]
+    fn livegraph_missing_map_survives_build_shape() {
+        let known = HashSet::new();
+        let roots = HashSet::new();
+        let mut mentions = HashSet::new();
+        let mut missing = HashSet::new();
+        consider_token(
+            "nw_o0_death",
+            &known,
+            &roots,
+            "module",
+            Some("ifo"),
+            &mut mentions,
+            Some(&mut missing),
+        );
+        let mut missing_by: HashMap<u32, HashSet<String>> = HashMap::new();
+        missing_by.entry(42).or_default().extend(missing);
+        assert!(mentions.is_empty());
+        assert!(missing_by.get(&42).unwrap().contains("nw_o0_death"));
     }
 
     #[test]
