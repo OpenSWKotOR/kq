@@ -33,7 +33,7 @@ const SOURCE_EXTS: &[&str] = &["nss"];
 
 /// Area/module entry files. A module *folder* (`end_m01aa`) is not a ResRef;
 /// the IFO is always `module.ifo` and the GIT/ARE are often `m01aa.*`.
-/// Chitin `lyt`/`vis` stay out of `module_entry_ids` until Task 5 (synthetic ARE edges).
+/// Chitin `lyt`/`vis`/`pth` are reached from ARE via `add_are_layout_edges`, not as module entries.
 #[allow(dead_code)]
 const MODULE_ENTRY_EXTS: &[&str] = &["ifo", "are", "git", "lyt", "vis", "pth"];
 
@@ -275,6 +275,7 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
             &catalog,
             &module_roots,
             &r.resref,
+            r.restype.extension(),
             strref_mode(r.restype),
             &mut mentions,
             &mut strrefs,
@@ -296,6 +297,7 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
             strrefs_by.insert(id, strrefs);
         }
     }
+    add_are_layout_edges(index, &winners_map, &mut edges);
 
     let (seed_labels, seed_ids) = seed_ids(index, &catalog, &winners_map, &module_entries);
     let (used_ids, parent) = bfs(index, &seed_ids, &edges, &winners_map, &module_entries);
@@ -666,11 +668,39 @@ fn bfs(
     (seen, parent)
 }
 
+/// Insert same-resref mentions from each ARE winner onto global `lyt`/`vis`/`pth`
+/// when those types exist. Tokenizer still skips bare self-resref; this is the
+/// supported path onto chitin layouts.
+fn add_are_layout_edges(
+    index: &Index,
+    winners: &HashMap<(Scope, String, ResType), u32>,
+    edges: &mut HashMap<u32, HashSet<String>>,
+) {
+    let _ = index;
+    let are = ResType::from_extension("are").unwrap();
+    for ((scope, resref, ty), &id) in winners {
+        if *ty != are {
+            continue;
+        }
+        let _ = scope;
+        for ext in ["lyt", "vis", "pth"] {
+            let Some(layout_ty) = ResType::from_extension(ext) else {
+                continue;
+            };
+            if winners.contains_key(&(None, resref.clone(), layout_ty)) {
+                edges.entry(id).or_default().insert(resref.clone());
+                break;
+            }
+        }
+    }
+}
+
 fn collect(
     decoded: &Decoded,
     known: &HashSet<String>,
     module_roots: &HashSet<String>,
     self_ref: &str,
+    self_ext: Option<&str>,
     mode: StrRefMode,
     mentions: &mut HashSet<String>,
     strrefs: &mut HashSet<i64>,
@@ -682,13 +712,14 @@ fn collect(
                 known,
                 module_roots,
                 self_ref,
+                self_ext,
                 mode,
                 mentions,
                 strrefs,
             },
             None,
         ),
-        Decoded::Text(s) => take_tokens(s, known, module_roots, self_ref, mentions),
+        Decoded::Text(s) => take_tokens(s, known, module_roots, self_ref, self_ext, mentions),
         Decoded::Opaque { .. } => {}
     }
 }
@@ -697,6 +728,7 @@ struct Walk<'a> {
     known: &'a HashSet<String>,
     module_roots: &'a HashSet<String>,
     self_ref: &'a str,
+    self_ext: Option<&'a str>,
     mode: StrRefMode,
     mentions: &'a mut HashSet<String>,
     strrefs: &'a mut HashSet<i64>,
@@ -705,7 +737,7 @@ struct Walk<'a> {
 fn walk_json(v: &J, w: &mut Walk<'_>, key: Option<&str>) {
     match v {
         J::String(s) => {
-            take_tokens(s, w.known, w.module_roots, w.self_ref, w.mentions);
+            take_tokens(s, w.known, w.module_roots, w.self_ref, w.self_ext, w.mentions);
             if matches!(w.mode, StrRefMode::TwoDa) && key.is_some_and(is_strref_column) {
                 if let Some(n) = parse_strref(s) {
                     w.strrefs.insert(n);
@@ -735,7 +767,7 @@ fn walk_json(v: &J, w: &mut Walk<'_>, key: Option<&str>) {
         }
         J::Object(map) => {
             for (k, val) in map {
-                take_tokens(k, w.known, w.module_roots, w.self_ref, w.mentions);
+                take_tokens(k, w.known, w.module_roots, w.self_ref, w.self_ext, w.mentions);
                 walk_json(val, w, Some(k));
             }
         }
@@ -777,21 +809,22 @@ fn take_tokens(
     known: &HashSet<String>,
     module_roots: &HashSet<String>,
     self_ref: &str,
+    self_ext: Option<&str>,
     out: &mut HashSet<String>,
 ) {
     let lower = s.to_ascii_lowercase();
     let mut start = None;
     for (i, c) in lower.char_indices() {
-        if c.is_ascii_alphanumeric() || c == '_' {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '.' {
             if start.is_none() {
                 start = Some(i);
             }
         } else if let Some(st) = start.take() {
-            consider_token(&lower[st..i], known, module_roots, self_ref, out);
+            consider_token(&lower[st..i], known, module_roots, self_ref, self_ext, out);
         }
     }
     if let Some(st) = start {
-        consider_token(&lower[st..], known, module_roots, self_ref, out);
+        consider_token(&lower[st..], known, module_roots, self_ref, self_ext, out);
     }
 }
 
@@ -799,10 +832,29 @@ fn consider_token(
     tok: &str,
     known: &HashSet<String>,
     module_roots: &HashSet<String>,
-    self_ref: &str,
+    self_resref: &str,
+    self_ext: Option<&str>,
     out: &mut HashSet<String>,
 ) {
-    if tok.is_empty() || tok.len() > 16 || tok == self_ref || tok == "****" {
+    if tok.is_empty() || tok == "****" {
+        return;
+    }
+    // Skip tokenizer noise for *this* resource (bare resref). Synthetic ARE
+    // edges are the supported path onto same-resref lyt/vis/pth. Dotted names
+    // of a different type (m01aa.lyt while scanning m01aa.are) still count.
+    if tok == self_resref {
+        return;
+    }
+    if let Some(ext) = self_ext {
+        if tok.eq_ignore_ascii_case(&format!("{self_resref}.{ext}")) {
+            return;
+        }
+    }
+    let ident_len = tok
+        .rsplit_once('.')
+        .map(|(base, _)| base.len())
+        .unwrap_or(tok.len());
+    if ident_len == 0 || ident_len > 16 {
         return;
     }
     if known.contains(tok) || module_roots.contains(tok) {
@@ -811,7 +863,6 @@ fn consider_token(
     }
     if let Some((base, ext)) = tok.rsplit_once('.') {
         if ResType::from_extension(ext).is_some()
-            && base != self_ref
             && (known.contains(base) || module_roots.contains(base))
         {
             out.insert(base.to_string());
@@ -937,11 +988,52 @@ mod tests {
             &known,
             &roots,
             "n_bastila",
+            Some("utc"),
             &mut out,
         );
         assert!(out.contains("k_ai_master"));
         assert!(!out.contains("n_bastila"));
         assert!(!out.contains("****"));
+    }
+
+    #[test]
+    fn are_mentions_same_resref_lyt() {
+        let lyt = ResType::from_extension("lyt").unwrap().0;
+        let are = ResType::from_extension("are").unwrap().0;
+        let mut index: Index = serde_json::from_value(serde_json::json!({
+            "schema": 3,
+            "root": "/game",
+            "kind": "install",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": ["/game/modules/end_m01aa.mod", "/game/data/layouts.bif"],
+            "sources": [
+                {"kind":"module-mod","label":"end_m01aa.mod","precedence":100,"module_root":"end_m01aa"},
+                {"kind":"chitin","label":"layouts.bif","precedence":700,"module_root":null}
+            ],
+            "resources": [
+                {"resref":"m01aa","restype":are,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"m01aa","restype":lyt,"file":1,"offset":0,"size":1,"source":1}
+            ],
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+
+        let winners = scoped_winners(&index);
+        let mut edges = HashMap::new();
+        add_are_layout_edges(&index, &winners, &mut edges);
+        let are_id = *winners
+            .get(&(Some("end_m01aa".into()), "m01aa".into(), ResType::from_extension("are").unwrap()))
+            .unwrap();
+        assert!(edges.get(&are_id).unwrap().contains("m01aa"));
+
+        // Tokenize path: scanning ARE text that contains "m01aa.lyt" must keep the token.
+        let known = HashSet::from(["m01aa".into()]);
+        let roots = HashSet::new();
+        let mut out = HashSet::new();
+        take_tokens("m01aa.lyt", &known, &roots, "m01aa", Some("are"), &mut out);
+        assert!(out.contains("m01aa"));
     }
 
     #[test]
@@ -1152,6 +1244,7 @@ mod tests {
             &known,
             &roots,
             "k_sup_gohawk",
+            Some("ncs"),
             &mut out,
         );
         assert!(out.contains("end_m01aa"));
@@ -1162,7 +1255,7 @@ mod tests {
         let known = HashSet::from(["n_bastila".into()]);
         let roots = HashSet::new();
         let mut out = HashSet::new();
-        take_tokens("n_bastila.utc", &known, &roots, "k_ai_master", &mut out);
+        take_tokens("n_bastila.utc", &known, &roots, "k_ai_master", Some("ncs"), &mut out);
         assert!(out.contains("n_bastila"));
     }
 
