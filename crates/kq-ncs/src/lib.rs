@@ -4,12 +4,14 @@ mod actions;
 mod actions_gen;
 mod cfg;
 mod fallback;
+mod protos;
 mod split;
 mod stack;
 mod ty;
 
 pub use cfg::{analyze, BlockEnd, Cfg};
 pub use kq_index::Game;
+pub use protos::{infer_prototypes, SubInfo};
 pub use split::{split, DeferredRegion, SplitError, SplitProgram, SubKind, SubRange};
 pub use stack::{
     stack_offset_to_pos, stack_size_to_pos, Const, CpDownTarget, Entry, LocalStack, StackError,
@@ -48,7 +50,7 @@ pub struct SubReport {
     pub status: SubStatus,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SubId {
     Header,
     Globals,
