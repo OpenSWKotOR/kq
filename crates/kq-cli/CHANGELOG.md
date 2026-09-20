@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+* accept `--json` and `--text` before or after every subcommand
+* accept `find` as an idiomatic alias for resource discovery with `ls`
+* decode padded and unpadded NUL-separated V2.b column headers
+* accept `cat --module ROOT` and resolve the module's highest-precedence copy
+* accept `cat --module ROOT --tag TAG --type EXT` for typed placed GIT objects
+* accept standalone resource/archive paths in `cat --from` without installation discovery
+
 ## [0.5.0](https://github.com/holowan-biolabs/kq/compare/v0.4.0...v0.5.0) (2026-08-31)
 
 

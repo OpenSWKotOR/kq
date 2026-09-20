@@ -99,11 +99,11 @@ struct Cli {
     install: Option<PathBuf>,
 
     /// Emit structured JSON (default). Use `--text` for human-readable output.
-    #[arg(long, default_value_t = true)]
+    #[arg(long, global = true, default_value_t = true)]
     json: bool,
 
     /// Human-readable text instead of JSON.
-    #[arg(long)]
+    #[arg(long, global = true)]
     text: bool,
 
     /// When to colorize output.
@@ -127,7 +127,7 @@ enum Command {
     /// Summarize the installation.
     Info(cmd::info::Args),
     /// List resources.
-    #[command(visible_alias = "list")]
+    #[command(visible_aliases = ["list", "find"])]
     Ls(cmd::ls::Args),
     /// Show every copy of a resource, in the order the game resolves them.
     Which(cmd::which::Args),
@@ -141,6 +141,7 @@ enum Command {
     /// Three-way merge of decoded resources.
     Merge(cmd::merge::Args),
     /// Search resource contents as text.
+    #[command(visible_alias = "search")]
     Grep(cmd::grep::Args),
     /// Write every indexed resource as JSON under `<install>_json/`.
     Export(cmd::export::Args),
@@ -230,4 +231,139 @@ fn is_broken_pipe(e: &anyhow::Error) -> bool {
         c.downcast_ref::<std::io::Error>()
             .is_some_and(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
     })
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn output_flags_are_accepted_before_the_subcommand() {
+        let cli = Cli::try_parse_from(["kq", "--text", "ls"]).unwrap();
+
+        assert!(cli.text);
+        assert!(matches!(cli.command, Command::Ls(_)));
+    }
+
+    #[test]
+    fn output_flags_are_accepted_after_the_subcommand() {
+        let cli = Cli::try_parse_from(["kq", "cat", "n_bastila.utc", "--text"]).unwrap();
+
+        assert!(cli.text);
+        assert!(matches!(cli.command, Command::Cat(_)));
+    }
+
+    #[test]
+    fn output_flags_are_accepted_after_a_subcommand_alias() {
+        let cli = Cli::try_parse_from(["kq", "list", "--json"]).unwrap();
+
+        assert!(cli.json);
+        assert!(matches!(cli.command, Command::Ls(_)));
+    }
+
+    #[test]
+    fn find_alias_accepts_resource_filters_and_trailing_output_flags() {
+        let cli =
+            Cli::try_parse_from(["kq", "find", "end_locker01", "--type", "ncs", "--json"]).unwrap();
+
+        assert!(cli.json);
+        assert!(matches!(cli.command, Command::Ls(_)));
+    }
+
+    #[test]
+    fn search_alias_accepts_grep_arguments() {
+        let cli = Cli::try_parse_from([
+            "kq",
+            "search",
+            "ActionUseSkill",
+            "*.ncs",
+            "--type",
+            "ncs",
+            "--winners",
+            "--text",
+        ])
+        .unwrap();
+
+        assert!(cli.text);
+        assert!(matches!(cli.command, Command::Grep(_)));
+    }
+
+    #[test]
+    fn cat_accepts_module_selector_with_global_flags_after_subcommand() {
+        let cli = Cli::try_parse_from([
+            "kq",
+            "cat",
+            "--install",
+            "/game",
+            "--module",
+            "end_m01aa",
+            "k_pend_room5_02",
+            "--type",
+            "ncs",
+            "--text",
+        ])
+        .unwrap();
+
+        assert!(cli.text);
+        assert!(matches!(cli.command, Command::Cat(_)));
+    }
+
+    #[test]
+    fn cat_rejects_module_and_container_selectors_together() {
+        let parsed = Cli::try_parse_from([
+            "kq",
+            "cat",
+            "shared",
+            "--module",
+            "end_m01aa",
+            "--from",
+            "end_m01aa.mod",
+        ]);
+        let error = match parsed {
+            Ok(_) => panic!("--module and --from should conflict"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn cat_accepts_explicit_module_tag_lookup() {
+        let cli = Cli::try_parse_from([
+            "kq",
+            "cat",
+            "--module",
+            "end_m01aa",
+            "--tag",
+            "end_door01",
+            "--type",
+            "utd",
+            "--text",
+        ])
+        .unwrap();
+        assert!(cli.text);
+        assert!(matches!(cli.command, Command::Cat(_)));
+    }
+
+    #[test]
+    fn cat_keeps_short_type_filter_for_tag_template_lookup() {
+        let cli = Cli::try_parse_from([
+            "kq",
+            "cat",
+            "--install",
+            "/game",
+            "--module",
+            "end_m01aa",
+            "--tag",
+            "end_locker01",
+            "-t",
+            "utp",
+            "--text",
+            "--no-cache",
+        ])
+        .unwrap();
+
+        assert!(cli.text);
+        assert!(matches!(cli.command, Command::Cat(_)));
+    }
 }

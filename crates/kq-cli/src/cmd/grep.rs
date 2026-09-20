@@ -42,6 +42,10 @@ pub struct Args {
     #[arg(short = 'l', long)]
     files_with_matches: bool,
 
+    /// Print N lines of context before and after each match.
+    #[arg(short = 'C', long, default_value_t = 0, value_name = "N")]
+    context: usize,
+
     /// Include only the copy the game would actually load.
     #[arg(long)]
     winners: bool,
@@ -66,11 +70,18 @@ struct Hit<'a> {
     container: &'a str,
     module: Option<&'a str>,
     line: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    matched: Option<bool>,
 }
 
 struct ResourceMatches {
     index: u32,
-    lines: Vec<String>,
+    lines: Vec<RenderedLine>,
+}
+
+struct RenderedLine {
+    text: String,
+    matched: bool,
 }
 
 pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
@@ -113,11 +124,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
                 }
                 _ => render::render(&decoded, Format::Gron, &r.filename()).ok()?,
             };
-            let lines: Vec<String> = projected
-                .lines()
-                .filter(|l| re.is_match(l))
-                .map(str::to_string)
-                .collect();
+            let lines = matching_lines(&projected, &re, args.context);
             if lines.is_empty() {
                 None
             } else {
@@ -158,11 +165,18 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
                     source: source.kind.as_str(),
                     container: &source.label,
                     module: source.module_root.as_deref(),
-                    line: line.clone(),
+                    line: line.text.clone(),
+                    matched: (args.context > 0).then_some(line.matched),
                 };
                 ctx.out.json_line(&mut w, &hit)?;
             } else {
-                writeln!(w, "{} {}", ctx.out.accent(&index.virt_path(r)), line)?;
+                let separator = if line.matched { ' ' } else { '-' };
+                writeln!(
+                    w,
+                    "{}{separator}{}",
+                    ctx.out.accent(&index.virt_path(r)),
+                    line.text
+                )?;
             }
         }
     }
@@ -184,6 +198,34 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     } else {
         Ok(exit::OK)
     }
+}
+
+fn matching_lines(projected: &str, re: &regex::Regex, context: usize) -> Vec<RenderedLine> {
+    let lines: Vec<&str> = projected.lines().collect();
+    let matches: Vec<bool> = lines.iter().map(|line| re.is_match(line)).collect();
+    let mut included = vec![false; lines.len()];
+
+    for (index, &matched) in matches.iter().enumerate() {
+        if matched {
+            let start = index.saturating_sub(context);
+            let end = index
+                .saturating_add(context)
+                .min(lines.len().saturating_sub(1));
+            included[start..=end].fill(true);
+        }
+    }
+
+    lines
+        .into_iter()
+        .zip(matches)
+        .zip(included)
+        .filter_map(|((text, matched), included)| {
+            included.then(|| RenderedLine {
+                text: text.to_string(),
+                matched,
+            })
+        })
+        .collect()
 }
 
 /// Whether `kq grep` reads this resource by default.
@@ -212,4 +254,74 @@ fn is_searchable(t: kq_format::ResType) -> bool {
                     | "bmu"
             )
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn context_lines_are_a_source_ordered_union() {
+        let re = regex::Regex::new("hit").unwrap();
+        let lines = matching_lines("zero\nhit one\ntwo\nhit three\nfour", &re, 1);
+
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| (line.text.as_str(), line.matched))
+                .collect::<Vec<_>>(),
+            vec![
+                ("zero", false),
+                ("hit one", true),
+                ("two", false),
+                ("hit three", true),
+                ("four", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn zero_context_keeps_only_matches_and_legacy_json_shape() {
+        let re = regex::Regex::new("hit").unwrap();
+        let lines = matching_lines("before\nhit\nafter", &re, 0);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "hit");
+        assert!(lines[0].matched);
+
+        let hit = Hit {
+            resource: "test.utc".into(),
+            path: "Override/test.utc".into(),
+            source: "override",
+            container: "Override",
+            module: None,
+            line: "hit".into(),
+            matched: None,
+        };
+        assert_eq!(
+            serde_json::to_value(hit).unwrap(),
+            json!({
+                "resource": "test.utc",
+                "path": "Override/test.utc",
+                "source": "override",
+                "container": "Override",
+                "module": null,
+                "line": "hit"
+            })
+        );
+    }
+
+    #[test]
+    fn context_json_marks_each_line_deterministically() {
+        let hit = Hit {
+            resource: "test.utc".into(),
+            path: "Override/test.utc".into(),
+            source: "override",
+            container: "Override",
+            module: None,
+            line: "before".into(),
+            matched: Some(false),
+        };
+        assert_eq!(serde_json::to_value(hit).unwrap()["matched"], false);
+    }
 }

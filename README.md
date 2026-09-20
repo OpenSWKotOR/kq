@@ -182,6 +182,8 @@ kq cat dialog.tlk --json
 kq cat k_ai_master.ncs -f outline
 kq cat n_bastila.utc --from Override
 kq cat appearance.2da --raw > appearance.2da
+# Resolve a placed GIT object tag to its door/placeable/trigger template.
+kq cat --module end_m01aa --tag end_door01 --type utd
 ```
 
 Formats (`-f`):

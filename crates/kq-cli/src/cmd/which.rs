@@ -10,6 +10,12 @@ use serde::Serialize;
 
 use crate::{exit, Ctx};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum OutputFormat {
+    Json,
+    Text,
+}
+
 #[derive(clap::Args)]
 pub struct Args {
     /// ResRef to resolve, with or without an extension.
@@ -19,6 +25,10 @@ pub struct Args {
     /// Restrict to one resource type when the name is ambiguous.
     #[arg(short = 't', long = "type", value_name = "EXT")]
     restype: Option<String>,
+
+    /// Override the global output mode for this report.
+    #[arg(long, value_enum, value_name = "FORMAT")]
+    format: Option<OutputFormat>,
 }
 
 #[derive(Serialize)]
@@ -46,6 +56,7 @@ struct Report {
 
 pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let index = ctx.index()?;
+    let json_output = format_is_json(args.format, ctx.out.json);
 
     // `kq which nwscript.nss` should work as well as `kq which nwscript`.
     let (name, ext_from_name) = match args.resref.rsplit_once('.') {
@@ -89,7 +100,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         });
     }
 
-    if ctx.out.json {
+    if json_output {
         ctx.out.json_value(&Report {
             resref: name,
             matches: hits.len(),
@@ -124,4 +135,49 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         );
     }
     Ok(exit::OK)
+}
+
+fn format_is_json(format: Option<OutputFormat>, default_json: bool) -> bool {
+    match format {
+        Some(OutputFormat::Json) => true,
+        Some(OutputFormat::Text) => false,
+        None => default_json,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn explicit_format_overrides_default_without_changing_legacy_mode() {
+        assert!(format_is_json(Some(OutputFormat::Json), false));
+        assert!(!format_is_json(Some(OutputFormat::Text), true));
+        assert!(format_is_json(None, true));
+        assert!(!format_is_json(None, false));
+    }
+
+    #[test]
+    fn parser_preserves_type_and_resref_with_explicit_json_format() {
+        let cli = crate::Cli::try_parse_from([
+            "kq",
+            "which",
+            "--install",
+            "/game",
+            "--type",
+            "ncs",
+            "k_pend_chest02",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        let crate::Command::Which(args) = cli.command else {
+            panic!("expected which command");
+        };
+
+        assert_eq!(args.restype.as_deref(), Some("ncs"));
+        assert_eq!(args.resref, "k_pend_chest02");
+        assert_eq!(args.format, Some(OutputFormat::Json));
+    }
 }
