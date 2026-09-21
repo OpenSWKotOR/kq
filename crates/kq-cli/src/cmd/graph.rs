@@ -292,20 +292,15 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
             write!(
                 w,
                 "{}",
-                format_counts(used_ids.len(), unused_ids.len(), overshadowed_ids.len())
+                format_inventory_text(
+                    &used_paths,
+                    &unused_paths,
+                    &overshadowed_pairs,
+                    &talk_lines,
+                    include_used_list,
+                    args.limit,
+                )
             )?;
-            let used_list = if include_used_list { &used_paths } else { &[][..] };
-            let lists = format_list_sections(
-                used_list,
-                &unused_paths,
-                &overshadowed_pairs,
-                &talk_lines,
-                args.limit,
-            );
-            if !lists.is_empty() {
-                writeln!(w)?;
-                write!(w, "{lists}")?;
-            }
         }
     }
 
@@ -379,7 +374,6 @@ fn write_json(
     ctx.out.json_value(&report)?;
     Ok(exit::OK)
 }
-
 
 fn used_tlk_records(graph: &LiveGraph) -> Vec<TlkRecord> {
     graph
@@ -679,28 +673,35 @@ fn show_named(
         return Ok(exit::NO_MATCH);
     }
 
+    let missing_by_path: HashMap<String, Vec<String>> = if show_missing {
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        for (path, tok) in missing_pairs(index, graph) {
+            map.entry(path).or_default().push(tok);
+        }
+        map
+    } else {
+        HashMap::new()
+    };
+
     let mut nodes = Vec::new();
     for id in ids {
         let r = &index.resources[id as usize];
         let source = index.source(r);
+        let path = index.virt_path(r);
         let chain_paths: Vec<String> = parent_chain(&graph.parent, id)
             .into_iter()
             .map(|i| index.virt_path(&index.resources[i as usize]))
             .collect();
         nodes.push(NamedNode {
             id,
-            path: index.virt_path(r),
+            path: path.clone(),
             resref: &r.resref,
             restype: r.restype.to_string(),
             module: source.module_root.as_deref(),
             status: copy_status(index, graph, id),
             parent_chain: chain_paths,
             edges: sorted_set(graph.edges.get(&id)),
-            missing: if show_missing {
-                sorted_set(graph.missing.get(&id))
-            } else {
-                Vec::new()
-            },
+            missing: missing_by_path.get(&path).cloned().unwrap_or_default(),
         });
     }
 
@@ -783,10 +784,11 @@ fn format_inventory_text(
     overshadowed: &[(String, String)],
     unused_talk: &[(i64, String)],
     include_used_list: bool,
+    limit: usize,
 ) -> String {
     let mut out = format_counts(used.len(), unused.len(), overshadowed.len());
     let used_list = if include_used_list { used } else { &[][..] };
-    let lists = format_list_sections(used_list, unused, overshadowed, unused_talk, 0);
+    let lists = format_list_sections(used_list, unused, overshadowed, unused_talk, limit);
     if !lists.is_empty() {
         out.push('\n');
         out.push_str(&lists);
@@ -804,11 +806,7 @@ fn copy_status(index: &kq_index::Index, graph: &LiveGraph, id: u32) -> &'static 
     }
 }
 
-fn candidate_ids(
-    index: &kq_index::Index,
-    filter: &Filter,
-    no_assets: bool,
-) -> Result<Vec<u32>> {
+fn candidate_ids(index: &kq_index::Index, filter: &Filter, no_assets: bool) -> Result<Vec<u32>> {
     let mut candidates = filter.select(index, "")?;
     if no_assets && filter.types.is_empty() {
         candidates.retain(|&i| !live::is_asset(index.resources[i as usize].restype));
@@ -886,7 +884,11 @@ fn count_by_type(index: &kq_index::Index, ids: &[u32]) -> Vec<TypeCount> {
     }
     let mut rows: Vec<TypeCount> = by_type
         .into_iter()
-        .map(|(restype, (count, bytes))| TypeCount { restype, count, bytes })
+        .map(|(restype, (count, bytes))| TypeCount {
+            restype,
+            count,
+            bytes,
+        })
         .collect();
     rows.sort_by(|a, b| b.count.cmp(&a.count).then(a.restype.cmp(&b.restype)));
     rows
@@ -1005,11 +1007,9 @@ mod tests {
         assert!(graph.missing.get(&2).unwrap().contains("k_rapidtransit"));
         assert!(graph.edges.get(&2).unwrap().contains("k_ai_master"));
         let pairs = missing_pairs(&index, &graph);
-        assert!(
-            pairs
-                .iter()
-                .any(|(path, tok)| path.contains("k_sup_gohawk") && tok == "k_rapidtransit")
-        );
+        assert!(pairs
+            .iter()
+            .any(|(path, tok)| path.contains("k_sup_gohawk") && tok == "k_rapidtransit"));
     }
 
     #[test]
@@ -1033,7 +1033,10 @@ mod tests {
     #[test]
     fn unused_is_not_a_subcommand() {
         let parsed = crate::Cli::try_parse_from(["kq", "unused"]);
-        assert!(parsed.is_err(), "kq unused must clap-error, not a subcommand");
+        assert!(
+            parsed.is_err(),
+            "kq unused must clap-error, not a subcommand"
+        );
     }
 
     #[test]
@@ -1053,7 +1056,10 @@ mod tests {
     #[test]
     fn export_is_not_a_subcommand() {
         let parsed = crate::Cli::try_parse_from(["kq", "export"]);
-        assert!(parsed.is_err(), "kq export must clap-error, not a subcommand");
+        assert!(
+            parsed.is_err(),
+            "kq export must clap-error, not a subcommand"
+        );
     }
 
     #[test]
@@ -1091,12 +1097,16 @@ mod tests {
             )],
             &[(12345, "Some leftover line".into())],
             false,
+            0,
         );
         assert!(
             text.contains("Unused (1)"),
             "default text must have Unused heading, got:\n{text}"
         );
-        assert!(text.starts_with("used 1\nunused 1\novershadowed 1\n"), "{text}");
+        assert!(
+            text.starts_with("used 1\nunused 1\novershadowed 1\n"),
+            "{text}"
+        );
         assert!(
             text.contains("  modules/danm13/danm13.rim/k_dead.ncs\n"),
             "{text}"
@@ -1194,7 +1204,10 @@ mod tests {
             !unused.contains(&0),
             "overshadowed module copy is not unused"
         );
-        assert!(unused.contains(&1), "loaded override with no walk is unused");
+        assert!(
+            unused.contains(&1),
+            "loaded override with no walk is unused"
+        );
     }
 
     #[test]
@@ -1254,17 +1267,27 @@ mod tests {
 
     #[test]
     fn lists_format_includes_used_heading() {
-        let text = format_inventory_text(
-            &["modules/a/foo.ncs".into()],
-            &[],
-            &[],
-            &[],
-            true,
-        );
+        let text = format_inventory_text(&["modules/a/foo.ncs".into()], &[], &[], &[], true, 0);
         assert!(text.contains("Used (1)"), "{text}");
         assert!(text.contains("  modules/a/foo.ncs\n"), "{text}");
         assert!(!text.contains("Unused ("), "{text}");
         assert!(!text.contains("Overshadowed ("), "{text}");
+    }
+
+    #[test]
+    fn inventory_text_limit_caps_printed_rows_not_headings() {
+        let unused: Vec<String> = (0..5).map(|i| format!("path{i}.ncs")).collect();
+        let text = format_inventory_text(&[], &unused, &[], &[], false, 2);
+        assert!(
+            text.contains("Unused (5)"),
+            "heading must keep the full count, got:\n{text}"
+        );
+        assert!(text.contains("  path0.ncs\n"), "{text}");
+        assert!(text.contains("  path1.ncs\n"), "{text}");
+        assert!(
+            !text.contains("path2.ncs"),
+            "limit 2 must drop later rows, got:\n{text}"
+        );
     }
 
     #[test]
@@ -1274,7 +1297,10 @@ mod tests {
         assert!(help.contains("--format"), "{help}");
         assert!(!help.contains("--what"), "{help}");
         assert!(!help.contains("--shadowed"), "{help}");
-        assert!(!help.contains(concat!("--", "winn", "er", "s-only")), "{help}");
+        assert!(
+            !help.contains(concat!("--", "winn", "er", "s-only")),
+            "{help}"
+        );
         assert!(!help.contains("--summary"), "{help}");
         let contest = concat!("winn", "er");
         let hidden = concat!("los", "er");
