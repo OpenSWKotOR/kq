@@ -101,7 +101,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         in_scope
             .iter()
             .copied()
-            .filter(|&i| live::is_shadowed(&index, i))
+            .filter(|&i| live::is_overshadowed(&index, i))
             .collect()
     } else {
         Vec::new()

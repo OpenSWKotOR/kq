@@ -195,7 +195,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let mut catalog: Vec<unused::Row<'_>> = in_scope
         .iter()
         .map(|&id| {
-            let status = if live::is_shadowed(&index, id) {
+            let status = if live::is_overshadowed(&index, id) {
                 "shadowed"
             } else if leftover_set.contains(&id) {
                 "leftover"
@@ -338,7 +338,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
             let shadowed: Vec<u32> = in_scope
                 .iter()
                 .copied()
-                .filter(|&i| live::is_shadowed(&index, i))
+                .filter(|&i| live::is_overshadowed(&index, i))
                 .collect();
             writeln!(w)?;
             writeln!(
@@ -645,7 +645,7 @@ fn normalize_name(name: &str) -> String {
 
 fn ids_for_name(index: &kq_index::Index, graph: &LiveGraph, name: &str) -> Vec<u32> {
     let name = normalize_name(name);
-    let mut ids: Vec<u32> = live::scoped_winners(index)
+    let mut ids: Vec<u32> = live::scoped_loaded(index)
         .into_iter()
         .filter(|((_, rr, _), _)| *rr == name)
         .map(|(_, id)| id)

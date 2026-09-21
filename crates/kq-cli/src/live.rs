@@ -17,7 +17,6 @@ use kq_index::{Index, RootKind};
 use rayon::prelude::*;
 use serde_json::Value as J;
 
-use crate::filter::Filter;
 use crate::read;
 use crate::render::{self, Decoded};
 
@@ -248,16 +247,16 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
         .map(|s| s.to_ascii_lowercase())
         .collect();
 
-    let winners_map = scoped_winners(index);
-    let winners: Vec<u32> = {
-        let mut v: Vec<u32> = winners_map.values().copied().collect();
+    let loaded_map = scoped_loaded(index);
+    let loaded: Vec<u32> = {
+        let mut v: Vec<u32> = loaded_map.values().copied().collect();
         v.sort_unstable();
         v.dedup();
         v
     };
-    let module_entries = module_entry_ids(index, &winners_map);
+    let module_entries = module_entry_ids(index, &loaded_map);
 
-    let mut scan_ids = winners.clone();
+    let mut scan_ids = loaded.clone();
     scan_ids.retain(|&i| is_scan_source(index.resources[i as usize].restype));
 
     crate::output::warn(format!(
@@ -288,7 +287,7 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
                     consider_token(
                         &name,
                         index,
-                        &winners_map,
+                        &loaded_map,
                         &module_entries,
                         &scope,
                         &module_roots,
@@ -299,9 +298,12 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
                     );
                 }
                 if !mentions.is_empty() || !missing.is_empty() {
-                    hits.lock()
-                        .expect("live scan lock")
-                        .push((i, mentions, HashSet::new(), missing));
+                    hits.lock().expect("live scan lock").push((
+                        i,
+                        mentions,
+                        HashSet::new(),
+                        missing,
+                    ));
                 }
                 continue;
             }
@@ -323,7 +325,7 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
             collect(
                 &decoded,
                 index,
-                &winners_map,
+                &loaded_map,
                 &module_entries,
                 &scope,
                 &module_roots,
@@ -356,10 +358,10 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
             missing_by.insert(id, missing);
         }
     }
-    add_are_layout_edges(index, &winners_map, &mut edges);
+    add_are_layout_edges(index, &loaded_map, &mut edges);
 
-    let (seed_labels, seed_ids) = seed_ids(index, &catalog, &winners_map, &module_entries);
-    let (used_ids, parent) = bfs(index, &seed_ids, &edges, &winners_map, &module_entries);
+    let (seed_labels, seed_ids) = seed_ids(index, &catalog, &loaded_map, &module_entries);
+    let (used_ids, parent) = bfs(index, &seed_ids, &edges, &loaded_map, &module_entries);
 
     let tlk = load_dialog_tlk(index)?;
     let tlk_len = tlk.len() as i64;
@@ -447,7 +449,7 @@ pub fn resource_scope(index: &Index, r: &kq_index::Resource) -> Scope {
 }
 
 /// Lowest precedence id per (scope, resref, restype).
-pub fn scoped_winners(index: &Index) -> HashMap<(Scope, String, ResType), u32> {
+pub fn scoped_loaded(index: &Index) -> HashMap<(Scope, String, ResType), u32> {
     let mut best: HashMap<(Scope, String, ResType), (u32, u32)> = HashMap::new();
     for (i, r) in index.resources.iter().enumerate() {
         let scope = resource_scope(index, r);
@@ -465,22 +467,22 @@ pub fn scoped_winners(index: &Index) -> HashMap<(Scope, String, ResType), u32> {
     best.into_iter().map(|(k, (id, _))| (k, id)).collect()
 }
 
-/// Resource ids that win in their own scope (module-local or global).
-pub fn scoped_winner_id_set(index: &Index) -> HashSet<u32> {
-    scoped_winners(index).into_values().collect()
+/// Resource ids loaded in their own scope (module-local or global).
+pub fn scoped_loaded_id_set(index: &Index) -> HashSet<u32> {
+    scoped_loaded(index).into_values().collect()
 }
 
 /// Higher-precedence copy in the same scope, or Override of the same
 /// `(resref, type)` when `id` is a module-scoped copy.
-pub fn shadowed_by(index: &Index, id: u32) -> Option<u32> {
+pub fn overshadowed_by(index: &Index, id: u32) -> Option<u32> {
     let r = &index.resources[id as usize];
     let scope = resource_scope(index, r);
-    let winners = scoped_winners(index);
-    let winner = winners
+    let loaded = scoped_loaded(index);
+    let loaded_id = loaded
         .get(&(scope.clone(), r.resref.clone(), r.restype))
         .copied()?;
-    if winner == id {
-        if let Some(&ov) = winners.get(&(None, r.resref.clone(), r.restype)) {
+    if loaded_id == id {
+        if let Some(&ov) = loaded.get(&(None, r.resref.clone(), r.restype)) {
             if index.source(&index.resources[ov as usize]).kind == kq_index::SourceKind::Override
                 && scope.is_some()
             {
@@ -489,15 +491,15 @@ pub fn shadowed_by(index: &Index, id: u32) -> Option<u32> {
         }
         return None;
     }
-    Some(winner)
+    Some(loaded_id)
 }
 
-pub fn is_shadowed(index: &Index, id: u32) -> bool {
-    shadowed_by(index, id).is_some()
+pub fn is_overshadowed(index: &Index, id: u32) -> bool {
+    overshadowed_by(index, id).is_some()
 }
 
 #[allow(dead_code)] // retained for Task 5 / global fallback tooling
-fn all_winners(index: &Index) -> Vec<u32> {
+fn all_loaded(index: &Index) -> Vec<u32> {
     let mut ids: Vec<u32> = (0..index.resources.len() as u32).collect();
     ids.sort_by(|&a, &b| {
         let (ra, rb) = (&index.resources[a as usize], &index.resources[b as usize]);
@@ -510,18 +512,21 @@ fn all_winners(index: &Index) -> Vec<u32> {
                     .cmp(&index.sources[rb.source as usize].precedence),
             )
     });
-    Filter::dedup_winners(index, &mut ids);
+    ids.dedup_by(|&mut a, &mut b| {
+        let (ra, rb) = (&index.resources[a as usize], &index.resources[b as usize]);
+        ra.resref == rb.resref && ra.restype == rb.restype
+    });
     ids
 }
 
 fn module_entry_ids(
     index: &Index,
-    winners: &HashMap<(Scope, String, ResType), u32>,
+    loaded: &HashMap<(Scope, String, ResType), u32>,
 ) -> HashMap<String, Vec<u32>> {
     let _ = index;
     const ENTRY: &[&str] = &["ifo", "are", "git", "pth"]; // lyt/vis chitin handled in Task 5
     let mut map: HashMap<String, Vec<u32>> = HashMap::new();
-    for ((scope, _resref, restype), &id) in winners {
+    for ((scope, _resref, restype), &id) in loaded {
         let Some(root) = scope.as_deref() else {
             continue;
         };
@@ -562,7 +567,7 @@ fn strref_mode(t: ResType) -> StrRefMode {
 fn seed_ids(
     index: &Index,
     known: &HashSet<String>,
-    winners: &HashMap<(Scope, String, ResType), u32>,
+    loaded: &HashMap<(Scope, String, ResType), u32>,
     module_entries: &HashMap<String, Vec<u32>>,
 ) -> (Vec<String>, Vec<u32>) {
     let mut labels = Vec::new();
@@ -570,7 +575,7 @@ fn seed_ids(
 
     let push_resref = |name: &str, labels: &mut Vec<String>, ids: &mut Vec<u32>| {
         let name = name.to_ascii_lowercase();
-        let list = resolve_in_scope(index, winners, module_entries, &None, &name);
+        let list = resolve_in_scope(index, loaded, module_entries, &None, &name);
         if !list.is_empty() {
             labels.push(name);
             ids.extend(list);
@@ -631,14 +636,14 @@ fn seed_ids(
             for name in expected {
                 let key = name.to_ascii_lowercase();
                 if !labels.iter().any(|l| l == &key) {
-                    crate::output::warn(format!("seed `{key}` unresolved (no winner)"));
+                    crate::output::warn(format!("seed `{key}` is not in this install"));
                 }
             }
         }
         RootKind::Capsule | RootKind::Folder | RootKind::File => {
             for r in &index.resources {
                 if matches!(r.restype.extension(), Some("ifo" | "are" | "git")) {
-                    let list = resolve_in_scope(index, winners, module_entries, &None, &r.resref);
+                    let list = resolve_in_scope(index, loaded, module_entries, &None, &r.resref);
                     if !list.is_empty() {
                         labels.push(r.resref.clone());
                         ids.extend(list);
@@ -716,7 +721,7 @@ fn load_dialog_tlk(index: &Index) -> Result<Vec<TlkRow>> {
 
 fn resolve_in_scope(
     index: &Index,
-    winners: &HashMap<(Scope, String, ResType), u32>,
+    loaded: &HashMap<(Scope, String, ResType), u32>,
     module_entries: &HashMap<String, Vec<u32>>,
     scope: &Scope,
     tok: &str,
@@ -732,7 +737,7 @@ fn resolve_in_scope(
     types.dedup();
 
     for ty in types {
-        if let Some(&id) = winners.get(&(None, tok.to_string(), ty)) {
+        if let Some(&id) = loaded.get(&(None, tok.to_string(), ty)) {
             let kind = index.source(&index.resources[id as usize]).kind;
             if kind == kq_index::SourceKind::Override {
                 out.push(id);
@@ -740,12 +745,12 @@ fn resolve_in_scope(
             }
         }
         if let Some(m) = scope {
-            if let Some(&id) = winners.get(&(Some(m.clone()), tok.to_string(), ty)) {
+            if let Some(&id) = loaded.get(&(Some(m.clone()), tok.to_string(), ty)) {
                 out.push(id);
                 continue;
             }
         }
-        if let Some(&id) = winners.get(&(None, tok.to_string(), ty)) {
+        if let Some(&id) = loaded.get(&(None, tok.to_string(), ty)) {
             out.push(id);
         }
     }
@@ -761,7 +766,7 @@ fn bfs(
     index: &Index,
     seeds: &[u32],
     edges: &HashMap<u32, HashSet<String>>,
-    winners: &HashMap<(Scope, String, ResType), u32>,
+    loaded: &HashMap<(Scope, String, ResType), u32>,
     module_entries: &HashMap<String, Vec<u32>>,
 ) -> (HashSet<u32>, HashMap<u32, u32>) {
     let mut seen = HashSet::new();
@@ -778,7 +783,7 @@ fn bfs(
             continue;
         };
         for tok in tokens {
-            for j in resolve_in_scope(index, winners, module_entries, &scope, tok) {
+            for j in resolve_in_scope(index, loaded, module_entries, &scope, tok) {
                 if seen.insert(j) {
                     parent.insert(j, id);
                     q.push_back(j);
@@ -789,17 +794,17 @@ fn bfs(
     (seen, parent)
 }
 
-/// Insert same-resref mentions from each ARE winner onto global `lyt`/`vis`/`pth`
+/// Insert same-resref mentions from each ARE loaded copy onto global `lyt`/`vis`/`pth`
 /// when those types exist. Tokenizer still skips bare self-resref; this is the
 /// supported path onto chitin layouts.
 fn add_are_layout_edges(
     index: &Index,
-    winners: &HashMap<(Scope, String, ResType), u32>,
+    loaded: &HashMap<(Scope, String, ResType), u32>,
     edges: &mut HashMap<u32, HashSet<String>>,
 ) {
     let _ = index;
     let are = ResType::from_extension("are").unwrap();
-    for ((scope, resref, ty), &id) in winners {
+    for ((scope, resref, ty), &id) in loaded {
         if *ty != are {
             continue;
         }
@@ -808,7 +813,7 @@ fn add_are_layout_edges(
             let Some(layout_ty) = ResType::from_extension(ext) else {
                 continue;
             };
-            if winners.contains_key(&(None, resref.clone(), layout_ty)) {
+            if loaded.contains_key(&(None, resref.clone(), layout_ty)) {
                 edges.entry(id).or_default().insert(resref.clone());
                 break;
             }
@@ -819,7 +824,7 @@ fn add_are_layout_edges(
 fn collect(
     decoded: &Decoded,
     index: &Index,
-    winners: &HashMap<(Scope, String, ResType), u32>,
+    loaded: &HashMap<(Scope, String, ResType), u32>,
     module_entries: &HashMap<String, Vec<u32>>,
     scope: &Scope,
     module_roots: &HashSet<String>,
@@ -834,7 +839,7 @@ fn collect(
         Decoded::Value(v) => {
             let mut w = Walk {
                 index,
-                winners,
+                loaded,
                 module_entries,
                 scope,
                 module_roots,
@@ -855,7 +860,7 @@ fn collect(
         Decoded::Text(s) => take_tokens(
             s,
             index,
-            winners,
+            loaded,
             module_entries,
             scope,
             module_roots,
@@ -870,7 +875,7 @@ fn collect(
 
 struct Walk<'a> {
     index: &'a Index,
-    winners: &'a HashMap<(Scope, String, ResType), u32>,
+    loaded: &'a HashMap<(Scope, String, ResType), u32>,
     module_entries: &'a HashMap<String, Vec<u32>>,
     scope: &'a Scope,
     module_roots: &'a HashSet<String>,
@@ -906,7 +911,7 @@ fn walk_ncs_consts(v: &J, w: &mut Walk<'_>) {
             take_tokens(
                 s,
                 w.index,
-                w.winners,
+                w.loaded,
                 w.module_entries,
                 w.scope,
                 w.module_roots,
@@ -925,7 +930,7 @@ fn walk_json(v: &J, w: &mut Walk<'_>, key: Option<&str>) {
             take_tokens(
                 s,
                 w.index,
-                w.winners,
+                w.loaded,
                 w.module_entries,
                 w.scope,
                 w.module_roots,
@@ -1003,7 +1008,7 @@ fn parse_strref(s: &str) -> Option<i64> {
 fn take_tokens(
     s: &str,
     index: &Index,
-    winners: &HashMap<(Scope, String, ResType), u32>,
+    loaded: &HashMap<(Scope, String, ResType), u32>,
     module_entries: &HashMap<String, Vec<u32>>,
     scope: &Scope,
     module_roots: &HashSet<String>,
@@ -1023,7 +1028,7 @@ fn take_tokens(
             consider_token(
                 &lower[st..i],
                 index,
-                winners,
+                loaded,
                 module_entries,
                 scope,
                 module_roots,
@@ -1038,7 +1043,7 @@ fn take_tokens(
         consider_token(
             &lower[st..],
             index,
-            winners,
+            loaded,
             module_entries,
             scope,
             module_roots,
@@ -1053,7 +1058,7 @@ fn take_tokens(
 fn consider_token(
     tok: &str,
     index: &Index,
-    winners: &HashMap<(Scope, String, ResType), u32>,
+    loaded: &HashMap<(Scope, String, ResType), u32>,
     module_entries: &HashMap<String, Vec<u32>>,
     scope: &Scope,
     module_roots: &HashSet<String>,
@@ -1086,7 +1091,7 @@ fn consider_token(
     if ident_len == 0 || ident_len > 16 {
         return;
     }
-    if !resolve_in_scope(index, winners, module_entries, scope, tok).is_empty()
+    if !resolve_in_scope(index, loaded, module_entries, scope, tok).is_empty()
         || module_roots.contains(tok)
     {
         out.insert(tok.to_string());
@@ -1094,7 +1099,7 @@ fn consider_token(
     }
     if let Some((base, ext)) = tok.rsplit_once('.') {
         if ResType::from_extension(ext).is_some()
-            && (!resolve_in_scope(index, winners, module_entries, scope, base).is_empty()
+            && (!resolve_in_scope(index, loaded, module_entries, scope, base).is_empty()
                 || module_roots.contains(base))
         {
             out.insert(base.to_string());
@@ -1149,9 +1154,9 @@ mod tests {
         }))
         .unwrap();
         index.reindex();
-        let winners = scoped_winners(&index);
-        let module_entries = module_entry_ids(&index, &winners);
-        (index, winners, module_entries)
+        let loaded = scoped_loaded(&index);
+        let module_entries = module_entry_ids(&index, &loaded);
+        (index, loaded, module_entries)
     }
 
     fn fixture_two_modules_shared_are() -> Index {
@@ -1220,13 +1225,13 @@ mod tests {
     #[test]
     fn ebo_m40ad_seed_survives_colliding_m12aa_are() {
         let index = fixture_two_modules_shared_are();
-        let winners_map = scoped_winners(&index);
-        let module_entries = module_entry_ids(&index, &winners_map);
+        let loaded_map = scoped_loaded(&index);
+        let module_entries = module_entry_ids(&index, &loaded_map);
         assert!(module_entries.contains_key("ebo_m12aa"));
         assert!(module_entries.contains_key("ebo_m40ad"));
 
         let catalog: HashSet<String> = index.resources.iter().map(|r| r.resref.clone()).collect();
-        let (labels, ids) = seed_ids(&index, &catalog, &winners_map, &module_entries);
+        let (labels, ids) = seed_ids(&index, &catalog, &loaded_map, &module_entries);
         assert!(labels.iter().any(|s| s == "ebo_m40ad"), "labels={labels:?}");
         assert!(!ids.is_empty());
         // At least one seed id must belong to ebo_m40ad's module source.
@@ -1240,33 +1245,33 @@ mod tests {
     }
 
     #[test]
-    fn scoped_winners_keep_per_module_ifo_and_are() {
+    fn scoped_loaded_keep_per_module_ifo_and_are() {
         let index = fixture_two_modules_shared_are();
-        let winners = scoped_winners(&index);
+        let loaded = scoped_loaded(&index);
         let ifo = ResType::from_extension("ifo").unwrap();
         let are = ResType::from_extension("are").unwrap();
-        let a = winners
+        let a = loaded
             .get(&(Some("ebo_m12aa".into()), "module".into(), ifo))
             .copied();
-        let b = winners
+        let b = loaded
             .get(&(Some("ebo_m40ad".into()), "module".into(), ifo))
             .copied();
         assert!(a.is_some() && b.is_some() && a != b);
-        let are_a = winners
+        let are_a = loaded
             .get(&(Some("ebo_m12aa".into()), "m12aa".into(), are))
             .copied();
-        let are_b = winners
+        let are_b = loaded
             .get(&(Some("ebo_m40ad".into()), "m12aa".into(), are))
             .copied();
         assert!(are_a.is_some() && are_b.is_some() && are_a != are_b);
     }
 
     #[test]
-    fn scoped_winners_mod_beats_rim_same_module() {
+    fn scoped_loaded_mod_beats_rim_same_module() {
         let index = fixture_two_modules_shared_are();
-        let winners = scoped_winners(&index);
+        let loaded = scoped_loaded(&index);
         let ncs = ResType::from_extension("ncs").unwrap();
-        let id = *winners
+        let id = *loaded
             .get(&(Some("ebo_m12aa".into()), "local".into(), ncs))
             .unwrap();
         assert_eq!(
@@ -1276,29 +1281,29 @@ mod tests {
     }
 
     #[test]
-    fn scoped_winners_override_beats_module_in_global_and_lookup() {
+    fn scoped_loaded_override_beats_module_in_global_and_lookup() {
         let index = fixture_two_modules_shared_are();
-        let winners = scoped_winners(&index);
+        let loaded = scoped_loaded(&index);
         let ncs = ResType::from_extension("ncs").unwrap();
-        // Global scope winner for "shared" is Override.
-        let id = *winners.get(&(None, "shared".into(), ncs)).unwrap();
+        // Global-scope loaded copy of "shared" is Override.
+        let id = *loaded.get(&(None, "shared".into(), ncs)).unwrap();
         assert_eq!(
             index.source(&index.resources[id as usize]).kind,
             kq_index::SourceKind::Override
         );
-        // Module still has its own scoped winner.
-        assert!(winners.contains_key(&(Some("ebo_m12aa".into()), "shared".into(), ncs)));
+        // Module still has its own scoped loaded copy.
+        assert!(loaded.contains_key(&(Some("ebo_m12aa".into()), "shared".into(), ncs)));
     }
 
     #[test]
     fn tokens_ignore_self_and_stars() {
-        let (index, winners, entries) = global_lookup(&["n_bastila", "k_ai_master", "danm13"]);
+        let (index, loaded, entries) = global_lookup(&["n_bastila", "k_ai_master", "danm13"]);
         let roots = HashSet::new();
         let mut out = HashSet::new();
         take_tokens(
             "Tag=n_bastila Script=k_ai_master ****",
             &index,
-            &winners,
+            &loaded,
             &entries,
             &None,
             &roots,
@@ -1343,10 +1348,10 @@ mod tests {
     fn are_mentions_same_resref_lyt() {
         let index = fixture_end_m01aa_are_lyt();
 
-        let winners = scoped_winners(&index);
+        let loaded = scoped_loaded(&index);
         let mut edges = HashMap::new();
-        add_are_layout_edges(&index, &winners, &mut edges);
-        let are_id = *winners
+        add_are_layout_edges(&index, &loaded, &mut edges);
+        let are_id = *loaded
             .get(&(
                 Some("end_m01aa".into()),
                 "m01aa".into(),
@@ -1362,7 +1367,7 @@ mod tests {
         take_tokens(
             "m01aa.lyt",
             &index,
-            &winners,
+            &loaded,
             &HashMap::new(),
             &scope,
             &roots,
@@ -1377,9 +1382,9 @@ mod tests {
     #[test]
     fn build_reaches_chitin_lyt_from_reachable_are() {
         let index = fixture_end_m01aa_are_lyt();
-        let winners = scoped_winners(&index);
+        let loaded = scoped_loaded(&index);
         let lyt_ty = ResType::from_extension("lyt").unwrap();
-        let lyt_id = *winners.get(&(None, "m01aa".into(), lyt_ty)).unwrap();
+        let lyt_id = *loaded.get(&(None, "m01aa".into(), lyt_ty)).unwrap();
 
         let graph = build(&index).expect("build");
         assert!(
@@ -1413,13 +1418,13 @@ mod tests {
         }))
         .unwrap();
         index.reindex();
-        let winners = scoped_winners(&index);
+        let loaded = scoped_loaded(&index);
         let module_entries = HashMap::new();
         let mut edges = HashMap::new();
         edges.insert(1, HashSet::from(["dead_b".into()]));
         edges.insert(2, HashSet::from(["dead_a".into()]));
         edges.insert(0, HashSet::from(["n_endsol01".into()]));
-        let (seen, _parent) = bfs(&index, &[0], &edges, &winners, &module_entries);
+        let (seen, _parent) = bfs(&index, &[0], &edges, &loaded, &module_entries);
         assert!(seen.contains(&0));
         assert!(seen.contains(&3));
         assert!(!seen.contains(&1));
@@ -1457,13 +1462,13 @@ mod tests {
         }))
         .unwrap();
         index.reindex();
-        let winners = scoped_winners(&index);
-        let module_entries = module_entry_ids(&index, &winners);
+        let loaded = scoped_loaded(&index);
+        let module_entries = module_entry_ids(&index, &loaded);
         let mut edges = HashMap::new();
         edges.insert(0, HashSet::from(["end_trask".into()]));
         edges.insert(4, HashSet::from(["other_mod_utc".into()]));
         let seeds = module_entries.get("end_m01aa").cloned().unwrap_or_default();
-        let (seen, _parent) = bfs(&index, &seeds, &edges, &winners, &module_entries);
+        let (seen, _parent) = bfs(&index, &seeds, &edges, &loaded, &module_entries);
         assert!(seen.contains(&2)); // end_trask
         assert!(!seen.contains(&3)); // other_mod_utc
         assert!(!seen.contains(&4)); // orphan
@@ -1533,9 +1538,9 @@ mod tests {
     #[test]
     fn bfs_case1_ifo_script_in_starting_module() {
         let index = fixture_end_and_m12();
-        let winners = scoped_winners(&index);
-        let module_entries = module_entry_ids(&index, &winners);
-        let ifo_id = *winners
+        let loaded = scoped_loaded(&index);
+        let module_entries = module_entry_ids(&index, &loaded);
+        let ifo_id = *loaded
             .get(&(
                 Some("end_m01aa".into()),
                 "module".into(),
@@ -1544,12 +1549,12 @@ mod tests {
             .unwrap();
         let mut edges = HashMap::new();
         edges.insert(ifo_id, HashSet::from(["k_pend_activate".into()]));
-        let (seen, parent) = bfs(&index, &[ifo_id], &edges, &winners, &module_entries);
+        let (seen, parent) = bfs(&index, &[ifo_id], &edges, &loaded, &module_entries);
         let ncs = ResType::from_extension("ncs").unwrap();
-        let want = *winners
+        let want = *loaded
             .get(&(Some("end_m01aa".into()), "k_pend_activate".into(), ncs))
             .unwrap();
-        let foreign = *winners
+        let foreign = *loaded
             .get(&(Some("m12ab".into()), "k_pend_activate".into(), ncs))
             .unwrap();
         assert!(seen.contains(&want));
@@ -1560,31 +1565,31 @@ mod tests {
     #[test]
     fn bfs_case5_seed_module_with_colliding_are() {
         let index = fixture_two_modules_shared_are();
-        let winners = scoped_winners(&index);
-        let module_entries = module_entry_ids(&index, &winners);
+        let loaded = scoped_loaded(&index);
+        let module_entries = module_entry_ids(&index, &loaded);
         let seeds = module_entries.get("ebo_m40ad").cloned().unwrap_or_default();
         assert!(!seeds.is_empty());
-        let (seen, _) = bfs(&index, &seeds, &HashMap::new(), &winners, &module_entries);
+        let (seen, _) = bfs(&index, &seeds, &HashMap::new(), &loaded, &module_entries);
         assert!(seeds.iter().all(|id| seen.contains(id)));
     }
 
     #[test]
-    fn bfs_case7_dlg_resolves_same_module_script_not_foreign_winner() {
+    fn bfs_case7_dlg_resolves_same_module_script_not_foreign_loaded() {
         let index = fixture_tar_rndtalk();
-        let winners = scoped_winners(&index);
-        let module_entries = module_entry_ids(&index, &winners);
+        let loaded = scoped_loaded(&index);
+        let module_entries = module_entry_ids(&index, &loaded);
         let dlg_ty = ResType::from_extension("dlg").unwrap();
-        let dlg = *winners
+        let dlg = *loaded
             .get(&(Some("tar_m03aa".into()), "tar03_citizen".into(), dlg_ty))
             .unwrap();
         let mut edges = HashMap::new();
         edges.insert(dlg, HashSet::from(["k_ptar_rndtalk0".into()]));
-        let (seen, _) = bfs(&index, &[dlg], &edges, &winners, &module_entries);
+        let (seen, _) = bfs(&index, &[dlg], &edges, &loaded, &module_entries);
         let ncs = ResType::from_extension("ncs").unwrap();
-        let local = *winners
+        let local = *loaded
             .get(&(Some("tar_m03aa".into()), "k_ptar_rndtalk0".into(), ncs))
             .unwrap();
-        let foreign = *winners
+        let foreign = *loaded
             .get(&(Some("tar_m02aa".into()), "k_ptar_rndtalk0".into(), ncs))
             .unwrap();
         assert!(seen.contains(&local));
@@ -1593,13 +1598,13 @@ mod tests {
 
     #[test]
     fn start_new_module_token_counts_without_resref() {
-        let (index, winners, entries) = global_lookup(&[]);
+        let (index, loaded, entries) = global_lookup(&[]);
         let roots = HashSet::from(["end_m01aa".into()]);
         let mut out = HashSet::new();
         take_tokens(
             "StartNewModule(\"end_m01aa\")",
             &index,
-            &winners,
+            &loaded,
             &entries,
             &None,
             &roots,
@@ -1613,13 +1618,13 @@ mod tests {
 
     #[test]
     fn filename_token_counts_as_resref() {
-        let (index, winners, entries) = global_lookup(&["n_bastila"]);
+        let (index, loaded, entries) = global_lookup(&["n_bastila"]);
         let roots = HashSet::new();
         let mut out = HashSet::new();
         take_tokens(
             "n_bastila.utc",
             &index,
-            &winners,
+            &loaded,
             &entries,
             &None,
             &roots,
@@ -1652,7 +1657,7 @@ mod tests {
 
     #[test]
     fn ncs_collect_consts_only_skips_opcode_and_action_names() {
-        let (index, winners, entries) = global_lookup(&[]);
+        let (index, loaded, entries) = global_lookup(&[]);
         let roots = HashSet::new();
         let mut mentions = HashSet::new();
         let mut strrefs = HashSet::new();
@@ -1674,7 +1679,7 @@ mod tests {
         collect(
             &Decoded::Value(v),
             &index,
-            &winners,
+            &loaded,
             &entries,
             &None,
             &roots,
@@ -1699,7 +1704,7 @@ mod tests {
 
     #[test]
     fn walk_json_does_not_tokenize_object_keys() {
-        let (index, winners, entries) = global_lookup(&["name", "offset", "k_ai_master"]);
+        let (index, loaded, entries) = global_lookup(&["name", "offset", "k_ai_master"]);
         let roots = HashSet::new();
         let mut mentions = HashSet::new();
         let mut strrefs = HashSet::new();
@@ -1709,7 +1714,7 @@ mod tests {
             &v,
             &mut Walk {
                 index: &index,
-                winners: &winners,
+                loaded: &loaded,
                 module_entries: &entries,
                 scope: &None,
                 module_roots: &roots,
@@ -1729,25 +1734,25 @@ mod tests {
 
     #[test]
     fn consider_token_skips_pure_numeric() {
-        let (index, winners, entries) = global_lookup(&["3"]);
+        let (index, loaded, entries) = global_lookup(&["3"]);
         let roots = HashSet::new();
         let mut out = HashSet::new();
         consider_token(
-            "3", &index, &winners, &entries, &None, &roots, "x", None, &mut out, None,
+            "3", &index, &loaded, &entries, &None, &roots, "x", None, &mut out, None,
         );
         assert!(out.is_empty());
     }
 
     #[test]
     fn collect_records_missing_resref_shaped_tokens() {
-        let (index, winners, entries) = global_lookup(&[]);
+        let (index, loaded, entries) = global_lookup(&[]);
         let roots = HashSet::new();
         let mut mentions = HashSet::new();
         let mut missing = HashSet::new();
         take_tokens(
             "StartNewModule(k_rapidtransit)",
             &index,
-            &winners,
+            &loaded,
             &entries,
             &None,
             &roots,
@@ -1763,8 +1768,8 @@ mod tests {
     #[test]
     fn foreign_module_only_resref_is_missing_not_mention() {
         let index = fixture_two_modules_shared_are();
-        let winners = scoped_winners(&index);
-        let module_entries = module_entry_ids(&index, &winners);
+        let loaded = scoped_loaded(&index);
+        let module_entries = module_entry_ids(&index, &loaded);
         let roots = HashSet::new();
         let scope = resource_scope(&index, &index.resources[1]);
         assert_eq!(scope.as_deref(), Some("ebo_m40ad"));
@@ -1775,7 +1780,7 @@ mod tests {
         consider_token(
             "local",
             &index,
-            &winners,
+            &loaded,
             &module_entries,
             &scope,
             &roots,
@@ -1793,14 +1798,14 @@ mod tests {
 
     #[test]
     fn livegraph_missing_map_survives_build_shape() {
-        let (index, winners, entries) = global_lookup(&[]);
+        let (index, loaded, entries) = global_lookup(&[]);
         let roots = HashSet::new();
         let mut mentions = HashSet::new();
         let mut missing = HashSet::new();
         consider_token(
             "nw_o0_death",
             &index,
-            &winners,
+            &loaded,
             &entries,
             &None,
             &roots,

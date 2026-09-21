@@ -104,7 +104,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         all_candidates
             .iter()
             .copied()
-            .filter(|&i| live::is_shadowed(&index, i))
+            .filter(|&i| live::is_overshadowed(&index, i))
             .collect()
     } else {
         Vec::new()
@@ -194,10 +194,10 @@ pub fn candidate_ids(
     no_assets: bool,
     include_shadowed: bool,
 ) -> Result<Vec<u32>> {
-    let winners = live::scoped_winner_id_set(index);
+    let winners = live::scoped_loaded_id_set(index);
     let mut candidates = filter.select(index, "")?;
     if !include_shadowed {
-        candidates.retain(|&i| winners.contains(&i) && !live::is_shadowed(index, i));
+        candidates.retain(|&i| winners.contains(&i) && !live::is_overshadowed(index, i));
     }
     if no_assets && filter.types.is_empty() {
         candidates.retain(|&i| !live::is_asset(index.resources[i as usize].restype));
@@ -221,7 +221,7 @@ pub fn leftover_ids(
 }
 
 pub fn winner_set(index: &kq_index::Index, _ids: &[u32]) -> HashSet<u32> {
-    live::scoped_winner_id_set(index)
+    live::scoped_loaded_id_set(index)
 }
 
 pub fn resource_row<'a>(
@@ -247,7 +247,7 @@ pub fn resource_row<'a>(
         })
         .unwrap_or_default();
     let shadowed_by =
-        live::shadowed_by(index, id).map(|p| index.virt_path(&index.resources[p as usize]));
+        live::overshadowed_by(index, id).map(|p| index.virt_path(&index.resources[p as usize]));
     Row {
         id,
         name: r.filename(),
@@ -405,7 +405,7 @@ mod tests {
     fn candidate_ids_default_skips_rim_and_foreign_module_copies() {
         let index = fixture_mod_and_rim();
         let ids = candidate_ids(&index, &Filter::default(), false, false).unwrap();
-        let winners = live::scoped_winner_id_set(&index);
+        let winners = live::scoped_loaded_id_set(&index);
         assert_eq!(ids.len(), 2);
         assert!(ids.iter().all(|i| winners.contains(i)));
     }
@@ -415,8 +415,8 @@ mod tests {
         let index = fixture_module_copy_shadowed_by_override();
         let module_copy_id = 0u32;
         let override_id = 1u32;
-        assert!(live::is_shadowed(&index, module_copy_id));
-        assert!(!live::is_shadowed(&index, override_id));
+        assert!(live::is_overshadowed(&index, module_copy_id));
+        assert!(!live::is_overshadowed(&index, override_id));
 
         let default_ids = candidate_ids(&index, &Filter::default(), false, false).unwrap();
         assert!(
@@ -443,7 +443,7 @@ mod tests {
             tlk: vec![],
             scanned: 0,
         };
-        let winners = live::scoped_winner_id_set(&index);
+        let winners = live::scoped_loaded_id_set(&index);
         let row = resource_row(&index, module_copy_id, &graph, &winners, "shadowed");
         assert_eq!(row.status, "shadowed");
         assert_eq!(
@@ -482,7 +482,7 @@ mod tests {
             tlk: vec![],
             scanned: 0,
         };
-        let winners = live::scoped_winner_id_set(&index);
+        let winners = live::scoped_loaded_id_set(&index);
         let row = resource_row(&index, rim_id, &graph, &winners, "shadowed");
         assert_eq!(row.status, "shadowed");
         assert_eq!(
