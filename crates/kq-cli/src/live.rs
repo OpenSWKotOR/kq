@@ -9,21 +9,23 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
-use std::sync::Mutex;
 
 use anyhow::Result;
-use kq_format::{tlk, ResType};
+use kq_format::gff::{Struct as GffStruct, Value as GffValue};
+use kq_format::{gff, ncs, ssf, tlk, twoda, ResType};
 use kq_index::{Index, RootKind};
-use rayon::prelude::*;
-use serde_json::Value as J;
 
 use crate::read;
-use crate::render::{self, Decoded};
 
 /// Types whose inbound references we often cannot see. Left out of leftover
 /// *resource* reports unless `--assets` or an explicit `-t` is given.
+///
+/// `.lip`: engine opens it only via `CSWCCreature::LipSync` → `CLIP::LoadLip`
+/// with dialog `VO_ResRef` (K1: `Sound` fallback) as resman type 3004 — same
+/// ResRef as the streamwaves VO, never a GFF field named `lip`. Treated as
+/// media like `.wav` for `--no-assets`.
 pub const ASSET_EXTS: &[&str] = &[
-    "tpc", "tga", "dds", "mdl", "mdx", "wav", "bmu", "mp3", "txi", "plt", "fxp",
+    "tpc", "tga", "dds", "mdl", "mdx", "wav", "bmu", "mp3", "txi", "plt", "fxp", "lip",
 ];
 
 /// Never loaded by the engine. Same ResRef as a compiled script does not
@@ -155,6 +157,67 @@ const ENGINE_2DAS: &[&str] = &[
     "xptable",
 ];
 
+/// K1 `CSWGuiPanel::StartLoadFromLayout` literals (research-engine Q1.e).
+const ENGINE_GUIS: &[&str] = &[
+    "abilities",
+    "areatransition",
+    "barkbubble",
+    "blackdot",
+    "character",
+    "classsel",
+    "computer",
+    "computercamera",
+    "confirm",
+    "container",
+    "credits",
+    "debug",
+    "dialog",
+    "equip",
+    "fade",
+    "galaxymap",
+    "inventory",
+    "journal",
+    "load",
+    "loadscreen",
+    "mainmenu",
+    "map",
+    "messages",
+    "mipc210x7",
+    "mipc212x10",
+    "mipc212x9",
+    "mipc216x12",
+    "mipc28x6",
+    "optautopause",
+    "optfeedback",
+    "optgameplay",
+    "optgraphics",
+    "optgraphicsadv",
+    "optionsingame",
+    "optionsmain",
+    "optmouse",
+    "optresolution",
+    "optsound",
+    "optsoundadv",
+    "partyselection",
+    "pause",
+    "pazaakgame",
+    "pazaaksetup",
+    "pazaakwager",
+    "pwrlvlup",
+    "saveload",
+    "savename",
+    "skillinfo",
+    "statussummary",
+    "store",
+    "titlemovie",
+    "tooltip",
+    "tooltip12x10",
+    "top",
+    "upgrade",
+    "upgradeitems",
+    "upgradesel",
+];
+
 /// Module roots hardcoded in K1 `swkotor.exe` (new game, Ebon Hawk, Taris).
 const K1_MODULES: &[&str] = &["end_m01aa", "ebo_m12aa", "ebo_m40ad", "tar_m02af"];
 
@@ -267,12 +330,14 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
         scan_ids.len()
     ));
 
-    let hits = Mutex::new(Vec::<(u32, HashSet<String>, HashSet<i64>, HashSet<String>)>::new());
+    // One file at a time, resources in offset order. Nested rayon over a USB
+    // mmap random-faults the same BIF and turned a ~30s scan into minutes.
     let groups = group_scan_ids_by_file(index, &scan_ids);
-    groups.par_iter().for_each(|(file_idx, ids)| {
+    let mut hits = Vec::<(u32, HashSet<String>, HashSet<i64>, HashSet<String>)>::new();
+    for (file_idx, ids) in &groups {
         let path = &index.files[*file_idx as usize];
         let Ok(map) = read::map_file(path) else {
-            return;
+            continue;
         };
         for &i in ids {
             let r = &index.resources[i as usize];
@@ -281,75 +346,34 @@ pub fn build(index: &Index) -> Result<LiveGraph> {
                 continue;
             }
             let bytes = &map[r.offset as usize..end];
-            if r.restype.extension() == Some("mdl") {
-                let mut mentions = HashSet::new();
-                let mut missing = HashSet::new();
-                let scope = resource_scope(index, r);
-                for name in kq_format::mdl::texture_refs(bytes) {
-                    consider_token(
-                        &name,
-                        index,
-                        &loaded_map,
-                        &module_entries,
-                        &scope,
-                        &module_roots,
-                        &r.resref,
-                        Some("mdl"),
-                        &mut mentions,
-                        Some(&mut missing),
-                    );
-                }
-                if !mentions.is_empty() || !missing.is_empty() {
-                    hits.lock().expect("live scan lock").push((
-                        i,
-                        mentions,
-                        HashSet::new(),
-                        missing,
-                    ));
-                }
-                continue;
-            }
-            let owned = bytes.to_vec();
-            // Keep unused/graph on CONSTS. Default NCS decode is NSS text;
-            // tokenizing that would invent identifier edges.
-            let disasm = if r.restype.extension() == Some("ncs") {
-                render::DisasmMode::On
-            } else {
-                render::DisasmMode::Off
-            };
-            let Ok(decoded) = render::decode_resource_mode(index, r, &owned, disasm) else {
-                continue;
-            };
+            let scope = resource_scope(index, r);
             let mut mentions = HashSet::new();
             let mut strrefs = HashSet::new();
             let mut missing = HashSet::new();
-            let scope = resource_scope(index, r);
-            collect(
-                &decoded,
+            scan_bytes(
+                bytes,
+                r,
                 index,
                 &loaded_map,
                 &module_entries,
                 &scope,
                 &module_roots,
-                &r.resref,
-                r.restype.extension(),
-                strref_mode(r.restype),
+                &catalog,
                 &mut mentions,
                 &mut strrefs,
                 &mut missing,
             );
-            if !mentions.is_empty() || !strrefs.is_empty() || !missing.is_empty() {
-                hits.lock()
-                    .expect("live scan lock")
-                    .push((i, mentions, strrefs, missing));
+            if mentions.is_empty() && strrefs.is_empty() && missing.is_empty() {
+                continue;
             }
+            hits.push((i, mentions, strrefs, missing));
         }
-    });
+    }
 
     let mut edges: HashMap<u32, HashSet<String>> = HashMap::new();
     let mut strrefs_by: HashMap<u32, HashSet<i64>> = HashMap::new();
     let mut missing_by: HashMap<u32, HashSet<String>> = HashMap::new();
-    for (id, mentions, strrefs, missing) in hits.into_inner().expect("live scan lock") {
+    for (id, mentions, strrefs, missing) in hits {
         if !mentions.is_empty() {
             edges.insert(id, mentions);
         }
@@ -442,12 +466,12 @@ pub type Scope = Option<String>;
 /// ModuleMod / ModuleRim → Some(module_root); everything else → None (global).
 pub fn resource_scope(index: &Index, r: &kq_index::Resource) -> Scope {
     let source = index.source(r);
-    match source.kind {
-        kq_index::SourceKind::ModuleMod | kq_index::SourceKind::ModuleRim => {
-            source.module_root.as_ref().map(|s| s.to_ascii_lowercase())
-        }
-        _ => None,
-    }
+    // Prefer an explicit module_root (module capsules and lips/NAME_loc.mod —
+    // engine `LIPS:NAME_loc` is registered with the module).
+    source
+        .module_root
+        .as_ref()
+        .map(|s| s.to_ascii_lowercase())
 }
 
 /// Lowest precedence id per (scope, resref, restype).
@@ -470,34 +494,61 @@ pub fn scoped_loaded(index: &Index) -> HashMap<(Scope, String, ResType), u32> {
 }
 
 /// Resource ids loaded in their own scope (module-local or global).
+#[allow(dead_code)]
 pub fn scoped_loaded_id_set(index: &Index) -> HashSet<u32> {
     scoped_loaded(index).into_values().collect()
 }
 
-/// Higher-precedence copy in the same scope, or Override of the same
-/// `(resref, type)` when `id` is a module-scoped copy.
-pub fn overshadowed_by(index: &Index, id: u32) -> Option<u32> {
+/// Higher-precedence copy that hides `id`.
+///
+/// - Same scope: another id won [`scoped_loaded`] for `(scope, resref, type)`.
+/// - Module scope: Override of the same `(resref, type)` still wins (R1).
+/// - A module capsule does **not** hide a global chitin/lips-localization copy.
+///   Resman only searches `MODULES:NAME` / `LIPS:NAME_loc` while that module is
+///   loaded (`CSWSModule::AddModuleResources`). `k_hbas_check01` in
+///   `unk_m44ac.mod` does not replace `scripts.bif` on the Ebon Hawk.
+///
+/// `loaded` must be the map from [`scoped_loaded`].
+pub fn overshadowed_by(
+    index: &Index,
+    loaded: &HashMap<(Scope, String, ResType), u32>,
+    id: u32,
+) -> Option<u32> {
     let r = &index.resources[id as usize];
     let scope = resource_scope(index, r);
-    let loaded = scoped_loaded(index);
     let loaded_id = loaded
         .get(&(scope.clone(), r.resref.clone(), r.restype))
         .copied()?;
-    if loaded_id == id {
+    if loaded_id != id {
+        return Some(loaded_id);
+    }
+        if scope.is_some() {
         if let Some(&ov) = loaded.get(&(None, r.resref.clone(), r.restype)) {
-            if index.source(&index.resources[ov as usize]).kind == kq_index::SourceKind::Override
-                && scope.is_some()
-            {
+            if index.source(&index.resources[ov as usize]).kind == kq_index::SourceKind::Override {
                 return Some(ov);
             }
         }
         return None;
     }
-    Some(loaded_id)
+    None
 }
 
-pub fn is_overshadowed(index: &Index, id: u32) -> bool {
-    overshadowed_by(index, id).is_some()
+pub fn is_overshadowed(
+    index: &Index,
+    loaded: &HashMap<(Scope, String, ResType), u32>,
+    id: u32,
+) -> bool {
+    overshadowed_by(index, loaded, id).is_some()
+}
+
+/// Every resource id that [`overshadowed_by`] would report. One pass.
+pub fn overshadowed_id_set(
+    index: &Index,
+    loaded: &HashMap<(Scope, String, ResType), u32>,
+) -> HashSet<u32> {
+    (0..index.resources.len() as u32)
+        .filter(|&id| is_overshadowed(index, loaded, id))
+        .collect()
 }
 
 #[allow(dead_code)] // retained for Task 5 / global fallback tooling
@@ -526,16 +577,18 @@ fn module_entry_ids(
     loaded: &HashMap<(Scope, String, ResType), u32>,
 ) -> HashMap<String, Vec<u32>> {
     let _ = index;
-    const ENTRY: &[&str] = &["ifo", "are", "git", "pth"]; // lyt/vis chitin handled in Task 5
+    // Every GFF in a reachable module is a scan source. The capsule is on
+    // resman for the whole visit (`AddModuleResources`); CreateObject and
+    // editor leftovers still carry Script*/On* on templates GIT never listed.
+    // Seeding only IFO/ARE/GIT dropped those slots (R3). Packed NCS is not
+    // seeded — RunScript still needs a GFF field or ExecuteScript. lyt/vis
+    // stay on the ARE same-resref path.
     let mut map: HashMap<String, Vec<u32>> = HashMap::new();
     for ((scope, _resref, restype), &id) in loaded {
         let Some(root) = scope.as_deref() else {
             continue;
         };
-        let Some(ext) = restype.extension() else {
-            continue;
-        };
-        if !ENTRY.contains(&ext) {
+        if !restype.is_gff() {
             continue;
         }
         map.entry(root.to_string()).or_default().push(id);
@@ -611,7 +664,11 @@ fn seed_ids(
 
     match index.kind {
         RootKind::Install => {
-            for name in ENGINE_ALWAYS.iter().chain(ENGINE_2DAS) {
+            for name in ENGINE_ALWAYS
+                .iter()
+                .chain(ENGINE_2DAS)
+                .chain(ENGINE_GUIS)
+            {
                 push_resref(name, &mut labels, &mut ids);
             }
             for name in K1_SCRIPTS {
@@ -632,6 +689,7 @@ fn seed_ids(
             let expected: Vec<&str> = ENGINE_ALWAYS
                 .iter()
                 .chain(ENGINE_2DAS.iter())
+                .chain(ENGINE_GUIS.iter())
                 .chain(K1_SCRIPTS.iter())
                 .copied()
                 .collect();
@@ -738,8 +796,8 @@ fn resolve_in_scope(
     types.sort_by_key(|t| t.0);
     types.dedup();
 
-    for ty in types {
-        if let Some(&id) = loaded.get(&(None, tok.to_string(), ty)) {
+    for ty in &types {
+        if let Some(&id) = loaded.get(&(None, tok.to_string(), *ty)) {
             let kind = index.source(&index.resources[id as usize]).kind;
             if kind == kq_index::SourceKind::Override {
                 out.push(id);
@@ -747,17 +805,32 @@ fn resolve_in_scope(
             }
         }
         if let Some(m) = scope {
-            if let Some(&id) = loaded.get(&(Some(m.clone()), tok.to_string(), ty)) {
+            if let Some(&id) = loaded.get(&(Some(m.clone()), tok.to_string(), *ty)) {
                 out.push(id);
                 continue;
             }
         }
-        if let Some(&id) = loaded.get(&(None, tok.to_string(), ty)) {
+        if let Some(&id) = loaded.get(&(None, tok.to_string(), *ty)) {
             out.push(id);
         }
     }
     if let Some(ids) = module_entries.get(tok) {
         out.extend(ids.iter().copied());
+    }
+    // Override/chitin DLG `Script`/`Active` run through resman for the
+    // *current* module. A ResRef that exists only in e.g. `ebo_m12aa.mod`
+    // is still live when that module is loaded; global resolve alone misses it.
+    // Override/chitin DLG `Script`/`Active` (global scope) run through
+    // resman for whatever module is current. Module-scoped callers still
+    // only see Override / this module / chitin — not a sibling module.
+    if out.is_empty() && !types.is_empty() && scope.is_none() {
+        for ty in &types {
+            for ((sc, resref, rty), &id) in loaded {
+                if sc.is_some() && resref == tok && rty == ty {
+                    out.push(id);
+                }
+            }
+        }
     }
     out.sort_unstable();
     out.dedup();
@@ -799,6 +872,181 @@ fn bfs(
 /// Insert same-resref mentions from each ARE loaded copy onto global `lyt`/`vis`/`pth`
 /// when those types exist. Tokenizer still skips bare self-resref; this is the
 /// supported path onto chitin layouts.
+/// Strip `//` and `/* */` outside string literals so include walking does
+/// not treat comments as compiler input (the game never parses `.nss`).
+fn nwscript_without_comments(src: &str) -> String {
+    let b = src.as_bytes();
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0;
+    let mut in_str = false;
+    while i < b.len() {
+        let c = b[i];
+        if in_str {
+            out.push(c as char);
+            if c == b'\\' && i + 1 < b.len() {
+                out.push(b[i + 1] as char);
+                i += 2;
+                continue;
+            }
+            if c == b'"' {
+                in_str = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == b'"' {
+            in_str = true;
+            out.push('"');
+            i += 1;
+            continue;
+        }
+        if c == b'/' && i + 1 < b.len() && b[i + 1] == b'/' {
+            i += 2;
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == b'/' && i + 1 < b.len() && b[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(b.len());
+            continue;
+        }
+        out.push(c as char);
+        i += 1;
+    }
+    out
+}
+
+fn parse_include_line(line: &str) -> Option<String> {
+    let t = line.trim();
+    let rest = t
+        .strip_prefix("#include")
+        .or_else(|| t.strip_prefix("#INCLUDE"))?;
+    let rest = rest.trim_start();
+    let (inner, _) = if let Some(s) = rest.strip_prefix('"') {
+        s.split_once('"')?
+    } else if let Some(s) = rest.strip_prefix('<') {
+        s.split_once('>')?
+    } else {
+        return None;
+    };
+    let name = inner
+        .trim()
+        .trim_end_matches(".nss")
+        .trim_end_matches(".NSS")
+        .to_ascii_lowercase();
+    if name.is_empty() || name.len() > 16 {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// Body text the compiler would see, plus `#include` ResRefs (not themselves
+/// RunScript targets).
+fn nss_body_and_includes(src: &str) -> (String, Vec<String>) {
+    let code = nwscript_without_comments(src);
+    let mut body = String::new();
+    let mut includes = Vec::new();
+    for line in code.lines() {
+        if let Some(name) = parse_include_line(line) {
+            includes.push(name);
+            body.push('\n');
+        } else {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    (body, includes)
+}
+
+fn nss_source(
+    index: &Index,
+    loaded: &HashMap<(Scope, String, ResType), u32>,
+    scope: &Scope,
+    resref: &str,
+) -> Option<String> {
+    let ty = ResType::from_extension("nss")?;
+    let key = resref.to_ascii_lowercase();
+    let mut id = None;
+    if let Some(&i) = loaded.get(&(None, key.clone(), ty)) {
+        if index.source(&index.resources[i as usize]).kind == kq_index::SourceKind::Override {
+            id = Some(i);
+        }
+    }
+    if id.is_none() {
+        if let Some(m) = scope {
+            id = loaded.get(&(Some(m.clone()), key.clone(), ty)).copied();
+        }
+    }
+    if id.is_none() {
+        id = loaded.get(&(None, key, ty)).copied();
+    }
+    let r = &index.resources[id? as usize];
+    let bytes = read::read(index, r).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn take_nss_tree(
+    src: &str,
+    index: &Index,
+    loaded: &HashMap<(Scope, String, ResType), u32>,
+    module_entries: &HashMap<String, Vec<u32>>,
+    scope: &Scope,
+    module_roots: &HashSet<String>,
+    catalog: &HashSet<String>,
+    self_ref: &str,
+    mentions: &mut HashSet<String>,
+    missing: &mut HashSet<String>,
+    seen_inc: &mut HashSet<String>,
+) {
+    let mut pending = VecDeque::new();
+    let (body, incs) = nss_body_and_includes(src);
+    take_tokens(
+        &body,
+        index,
+        loaded,
+        module_entries,
+        scope,
+        module_roots,
+        catalog,
+        self_ref,
+        Some("ncs"),
+        mentions,
+        Some(missing),
+    );
+    pending.extend(incs);
+    while let Some(inc) = pending.pop_front() {
+        if !seen_inc.insert(inc.clone()) {
+            continue;
+        }
+        let Some(text) = nss_source(index, loaded, scope, &inc) else {
+            continue;
+        };
+        let (body, nested) = nss_body_and_includes(&text);
+        // Include source is compiler input for this NCS, not a live `.nss`
+        // edge. Tokens become mentions of the compiled script.
+        take_tokens(
+            &body,
+            index,
+            loaded,
+            module_entries,
+            scope,
+            module_roots,
+            catalog,
+            self_ref,
+            Some("ncs"),
+            mentions,
+            Some(missing),
+        );
+        pending.extend(nested);
+    }
+}
+
 fn add_are_layout_edges(
     index: &Index,
     loaded: &HashMap<(Scope, String, ResType), u32>,
@@ -823,13 +1071,379 @@ fn add_are_layout_edges(
     }
 }
 
-fn collect(
-    decoded: &Decoded,
+fn scan_bytes(
+    bytes: &[u8],
+    r: &kq_index::Resource,
     index: &Index,
     loaded: &HashMap<(Scope, String, ResType), u32>,
     module_entries: &HashMap<String, Vec<u32>>,
     scope: &Scope,
     module_roots: &HashSet<String>,
+    catalog: &HashSet<String>,
+    mentions: &mut HashSet<String>,
+    strrefs: &mut HashSet<i64>,
+    missing: &mut HashSet<String>,
+) {
+    let ext = r.restype.extension();
+    let path = Path::new("<scan>");
+    if ext == Some("mdl") {
+        for name in kq_format::mdl::texture_refs(bytes) {
+            consider_token(
+                &name,
+                index,
+                loaded,
+                module_entries,
+                scope,
+                module_roots,
+                catalog,
+                &r.resref,
+                Some("mdl"),
+                mentions,
+                Some(missing),
+                false,
+            );
+        }
+        return;
+    }
+    if ext == Some("ncs") {
+        let Ok(n) = ncs::read(bytes, path) else {
+            return;
+        };
+        let d = kq_ncs::decompile(&n, index.game);
+        let mut seen_inc = HashSet::new();
+        take_nss_tree(
+            &d.source,
+            index,
+            loaded,
+            module_entries,
+            scope,
+            module_roots,
+            catalog,
+            &r.resref,
+            mentions,
+            missing,
+            &mut seen_inc,
+        );
+        if let Some(src) = nss_source(index, loaded, scope, &r.resref) {
+            take_nss_tree(
+                &src,
+                index,
+                loaded,
+                module_entries,
+                scope,
+                module_roots,
+                catalog,
+                &r.resref,
+                mentions,
+                missing,
+                &mut seen_inc,
+            );
+        }
+        // Bytecode strings the decompiler dropped (incomplete fallback).
+        for ins in &n.instructions {
+            if ins.op != "CONSTS" {
+                continue;
+            }
+            for arg in &ins.args {
+                let ncs::Arg::Str(s) = arg else {
+                    continue;
+                };
+                take_tokens(
+                    s,
+                    index,
+                    loaded,
+                    module_entries,
+                    scope,
+                    module_roots,
+                    catalog,
+                    &r.resref,
+                    Some("ncs"),
+                    mentions,
+                    Some(missing),
+                );
+            }
+        }
+        return;
+    }
+    if gff::sniff(bytes) {
+        let Ok(g) = gff::read(bytes, path) else {
+            return;
+        };
+        walk_gff_struct(
+            &g.root,
+            index,
+            loaded,
+            module_entries,
+            scope,
+            module_roots,
+            catalog,
+            &r.resref,
+            ext,
+            strref_mode(r.restype),
+            mentions,
+            strrefs,
+            missing,
+        );
+        return;
+    }
+    if ext == Some("2da") || twoda::sniff(bytes) {
+        let Ok(t) = twoda::read_or_salvage(bytes, path) else {
+            return;
+        };
+        for label in &t.labels {
+            take_tokens(
+                label,
+                index,
+                loaded,
+                module_entries,
+                scope,
+                module_roots,
+                catalog,
+                &r.resref,
+                ext,
+                mentions,
+                Some(missing),
+            );
+        }
+        for row in &t.rows {
+            for (i, cell) in row.iter().enumerate() {
+                let col = t.columns.get(i).map(|s| s.as_str());
+                take_tokens(
+                    cell,
+                    index,
+                    loaded,
+                    module_entries,
+                    scope,
+                    module_roots,
+                    catalog,
+                    &r.resref,
+                    ext,
+                    mentions,
+                    Some(missing),
+                );
+                if col.is_some_and(is_strref_column) {
+                    if let Some(n) = parse_strref(cell) {
+                        strrefs.insert(n);
+                    }
+                }
+            }
+        }
+        return;
+    }
+    if ext == Some("ssf") || ssf::sniff(bytes) {
+        let Ok(s) = ssf::read(bytes, path) else {
+            return;
+        };
+        for n in s.sounds {
+            if n >= 0 {
+                strrefs.insert(n);
+            }
+        }
+        return;
+    }
+    if r.restype.is_plain_text() {
+        if let Ok(text) = std::str::from_utf8(bytes) {
+            take_tokens(
+                text,
+                index,
+                loaded,
+                module_entries,
+                scope,
+                module_roots,
+                catalog,
+                &r.resref,
+                ext,
+                mentions,
+                Some(missing),
+            );
+        }
+    }
+}
+
+fn walk_gff_struct(
+    s: &GffStruct,
+    index: &Index,
+    loaded: &HashMap<(Scope, String, ResType), u32>,
+    module_entries: &HashMap<String, Vec<u32>>,
+    scope: &Scope,
+    module_roots: &HashSet<String>,
+    catalog: &HashSet<String>,
+    self_ref: &str,
+    self_ext: Option<&str>,
+    mode: StrRefMode,
+    mentions: &mut HashSet<String>,
+    strrefs: &mut HashSet<i64>,
+    missing: &mut HashSet<String>,
+) {
+    for (label, value) in &s.fields {
+        walk_gff_value(
+            value,
+            Some(label),
+            index,
+            loaded,
+            module_entries,
+            scope,
+            module_roots,
+            catalog,
+            self_ref,
+            self_ext,
+            mode,
+            mentions,
+            strrefs,
+            missing,
+        );
+    }
+}
+
+/// GFF labels the engine reads as ResRefs (research-engine Q3/Q4/Q6).
+///
+/// These fields are a single ResRef each (not free prose). Same-ResRef as the
+/// owning resource is still a live edge when it names another restype — e.g.
+/// UTC `Conversation` == template name → `.dlg`, DLG `VO_ResRef` → `.lip`
+/// (`CSWCCreature::LipSync` / `CLIP::LoadLip` type 3004).
+fn is_engine_resref_field(label: &str) -> bool {
+    matches!(
+        label,
+        "Conversation"
+            | "TemplateResRef"
+            | "VO_ResRef"
+            | "Sound"
+            | "Active"
+            | "Active2"
+            | "Script"
+            | "Script2"
+            | "EndConversation"
+            | "EndConverAbort"
+            | "InventoryRes"
+            | "LinkedToModule"
+            | "Mod_Entry_Area"
+            | "Area_Name"
+            | "CameraModel"
+            | "AmbientTrack"
+            | "StuntModel"
+            | "ActionParamStrA"
+            | "ActionParamStrB"
+            | "ParamStrA"
+            | "ParamStrB"
+    ) || label.starts_with("Script")
+        || label.starts_with("On")
+        || label.starts_with("Mod_On")
+}
+
+fn walk_gff_value(
+    v: &GffValue,
+    key: Option<&str>,
+    index: &Index,
+    loaded: &HashMap<(Scope, String, ResType), u32>,
+    module_entries: &HashMap<String, Vec<u32>>,
+    scope: &Scope,
+    module_roots: &HashSet<String>,
+    catalog: &HashSet<String>,
+    self_ref: &str,
+    self_ext: Option<&str>,
+    mode: StrRefMode,
+    mentions: &mut HashSet<String>,
+    strrefs: &mut HashSet<i64>,
+    missing: &mut HashSet<String>,
+) {
+    match v {
+        GffValue::Str(s) => {
+            if key.is_some_and(|k| is_engine_resref_field(k)) {
+                // One ResRef cell — do not prose-split; allow self ResRef so
+                // Conversation/VO_ResRef matching the owner name still resolve
+                // to .dlg / .lip / .ncs of that name.
+                consider_token(
+                    &s.to_ascii_lowercase(),
+                    index,
+                    loaded,
+                    module_entries,
+                    scope,
+                    module_roots,
+                    catalog,
+                    self_ref,
+                    self_ext,
+                    mentions,
+                    Some(missing),
+                    true,
+                );
+            } else {
+                take_tokens(
+                    s,
+                    index,
+                    loaded,
+                    module_entries,
+                    scope,
+                    module_roots,
+                    catalog,
+                    self_ref,
+                    self_ext,
+                    mentions,
+                    Some(missing),
+                );
+            }
+        }
+        GffValue::LocString { strref, substrings: _ } => {
+            // Spoken/UI text is not a ResRef source. Tokenizing it is what
+            // made a K1 graph scan take hours (`the` / `because` through
+            // resolve_in_scope). The talk-table index is the only live edge.
+            if matches!(mode, StrRefMode::Gff) && *strref >= 0 {
+                strrefs.insert(*strref);
+            }
+        }
+        GffValue::StrRef(n) => {
+            if matches!(mode, StrRefMode::Gff) {
+                strrefs.insert(*n);
+            }
+        }
+        GffValue::Struct(child) => walk_gff_struct(
+            child,
+            index,
+            loaded,
+            module_entries,
+            scope,
+            module_roots,
+            catalog,
+            self_ref,
+            self_ext,
+            mode,
+            mentions,
+            strrefs,
+            missing,
+        ),
+        GffValue::List(items) => {
+            for child in items {
+                walk_gff_struct(
+                    child,
+                    index,
+                    loaded,
+                    module_entries,
+                    scope,
+                    module_roots,
+                    catalog,
+                    self_ref,
+                    self_ext,
+                    mode,
+                    mentions,
+                    strrefs,
+                    missing,
+                );
+            }
+        }
+        _ => {
+            let _ = key;
+        }
+    }
+}
+
+#[cfg(test)]
+fn collect(
+    decoded: &crate::render::Decoded,
+    index: &Index,
+    loaded: &HashMap<(Scope, String, ResType), u32>,
+    module_entries: &HashMap<String, Vec<u32>>,
+    scope: &Scope,
+    module_roots: &HashSet<String>,
+    catalog: &HashSet<String>,
     self_ref: &str,
     self_ext: Option<&str>,
     mode: StrRefMode,
@@ -838,13 +1452,14 @@ fn collect(
     missing: &mut HashSet<String>,
 ) {
     match decoded {
-        Decoded::Value(v) => {
+        crate::render::Decoded::Value(v) => {
             let mut w = Walk {
                 index,
                 loaded,
                 module_entries,
                 scope,
                 module_roots,
+                catalog,
                 self_ref,
                 self_ext,
                 mode,
@@ -853,34 +1468,39 @@ fn collect(
                 missing,
             };
             // CONSTS-only until ACTION-aware ResRef edges land with DeNCS.
-            if self_ext == Some("ncs") || v.get("instructions").is_some_and(J::is_array) {
+            if self_ext == Some("ncs")
+                || v.get("instructions").is_some_and(serde_json::Value::is_array)
+            {
                 walk_ncs_consts(v, &mut w);
             } else {
                 walk_json(v, &mut w, None);
             }
         }
-        Decoded::Text(s) => take_tokens(
+        crate::render::Decoded::Text(s) => take_tokens(
             s,
             index,
             loaded,
             module_entries,
             scope,
             module_roots,
+            catalog,
             self_ref,
             self_ext,
             mentions,
             Some(missing),
         ),
-        Decoded::Opaque { .. } => {}
+        crate::render::Decoded::Opaque { .. } => {}
     }
 }
 
+#[cfg(test)]
 struct Walk<'a> {
     index: &'a Index,
     loaded: &'a HashMap<(Scope, String, ResType), u32>,
     module_entries: &'a HashMap<String, Vec<u32>>,
     scope: &'a Scope,
     module_roots: &'a HashSet<String>,
+    catalog: &'a HashSet<String>,
     self_ref: &'a str,
     self_ext: Option<&'a str>,
     mode: StrRefMode,
@@ -889,25 +1509,26 @@ struct Walk<'a> {
     missing: &'a mut HashSet<String>,
 }
 
-fn walk_ncs_consts(v: &J, w: &mut Walk<'_>) {
-    let Some(instructions) = v.get("instructions").and_then(J::as_array) else {
+#[cfg(test)]
+fn walk_ncs_consts(v: &serde_json::Value, w: &mut Walk<'_>) {
+    let Some(instructions) = v.get("instructions").and_then(serde_json::Value::as_array) else {
         return;
     };
     for ins in instructions {
         let Some(map) = ins.as_object() else {
             continue;
         };
-        let Some(op) = map.get("op").and_then(J::as_str) else {
+        let Some(op) = map.get("op").and_then(serde_json::Value::as_str) else {
             continue;
         };
         if op != "CONSTS" {
             continue;
         }
-        let Some(args) = map.get("args").and_then(J::as_array) else {
+        let Some(args) = map.get("args").and_then(serde_json::Value::as_array) else {
             continue;
         };
         for arg in args {
-            let J::String(s) = arg else {
+            let serde_json::Value::String(s) = arg else {
                 continue;
             };
             take_tokens(
@@ -917,6 +1538,7 @@ fn walk_ncs_consts(v: &J, w: &mut Walk<'_>) {
                 w.module_entries,
                 w.scope,
                 w.module_roots,
+                w.catalog,
                 w.self_ref,
                 w.self_ext,
                 w.mentions,
@@ -926,9 +1548,10 @@ fn walk_ncs_consts(v: &J, w: &mut Walk<'_>) {
     }
 }
 
-fn walk_json(v: &J, w: &mut Walk<'_>, key: Option<&str>) {
+#[cfg(test)]
+fn walk_json(v: &serde_json::Value, w: &mut Walk<'_>, key: Option<&str>) {
     match v {
-        J::String(s) => {
+        serde_json::Value::String(s) => {
             take_tokens(
                 s,
                 w.index,
@@ -936,6 +1559,7 @@ fn walk_json(v: &J, w: &mut Walk<'_>, key: Option<&str>) {
                 w.module_entries,
                 w.scope,
                 w.module_roots,
+                w.catalog,
                 w.self_ref,
                 w.self_ext,
                 w.mentions,
@@ -947,7 +1571,7 @@ fn walk_json(v: &J, w: &mut Walk<'_>, key: Option<&str>) {
                 }
             }
         }
-        J::Number(n) => {
+        serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 match w.mode {
                     StrRefMode::Ssf => {
@@ -963,12 +1587,12 @@ fn walk_json(v: &J, w: &mut Walk<'_>, key: Option<&str>) {
                 }
             }
         }
-        J::Array(items) => {
+        serde_json::Value::Array(items) => {
             for item in items {
                 walk_json(item, w, key);
             }
         }
-        J::Object(map) => {
+        serde_json::Value::Object(map) => {
             for (k, val) in map {
                 // Do not tokenize object keys (column labels, NCS field names, etc.).
                 walk_json(val, w, Some(k));
@@ -1014,6 +1638,7 @@ fn take_tokens(
     module_entries: &HashMap<String, Vec<u32>>,
     scope: &Scope,
     module_roots: &HashSet<String>,
+    catalog: &HashSet<String>,
     self_ref: &str,
     self_ext: Option<&str>,
     out: &mut HashSet<String>,
@@ -1034,10 +1659,12 @@ fn take_tokens(
                 module_entries,
                 scope,
                 module_roots,
+                catalog,
                 self_ref,
                 self_ext,
                 out,
                 missing.as_deref_mut(),
+                false,
             );
         }
     }
@@ -1049,12 +1676,18 @@ fn take_tokens(
             module_entries,
             scope,
             module_roots,
+            catalog,
             self_ref,
             self_ext,
             out,
             missing,
+            false,
         );
     }
+}
+
+fn looks_like_resref_token(tok: &str) -> bool {
+    tok.contains('_') || tok.contains('.') || tok.bytes().any(|b| b.is_ascii_digit())
 }
 
 fn consider_token(
@@ -1064,25 +1697,31 @@ fn consider_token(
     module_entries: &HashMap<String, Vec<u32>>,
     scope: &Scope,
     module_roots: &HashSet<String>,
+    catalog: &HashSet<String>,
     self_resref: &str,
     self_ext: Option<&str>,
     out: &mut HashSet<String>,
     missing: Option<&mut HashSet<String>>,
+    allow_self: bool,
 ) {
     if tok.is_empty() || tok == "****" {
         return;
     }
-    if !tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit()) {
+    if tok.chars().all(|c| c.is_ascii_digit()) {
         return;
     }
-    // Skip tokenizer noise for *this* resource (bare resref). Synthetic ARE
-    // edges are the supported path onto same-resref lyt/vis/pth. Dotted names
-    // of a different type (m01aa.lyt while scanning m01aa.are) still count.
-    if tok == self_resref {
+    // Free-token scans skip the owner ResRef (avoids every GFF mentioning
+    // itself). Engine ResRef *fields* pass allow_self: UTC Conversation and
+    // DLG VO_ResRef often reuse the owner name for a different restype.
+    if !allow_self && tok == self_resref {
         return;
     }
     if let Some(ext) = self_ext {
-        if tok.eq_ignore_ascii_case(&format!("{self_resref}.{ext}")) {
+        if tok.len() == self_resref.len() + 1 + ext.len()
+            && tok.as_bytes().get(self_resref.len()) == Some(&b'.')
+            && tok.starts_with(self_resref)
+            && tok.ends_with(ext)
+        {
             return;
         }
     }
@@ -1091,6 +1730,30 @@ fn consider_token(
         .map(|(base, _)| base.len())
         .unwrap_or(tok.len());
     if ident_len == 0 || ident_len > 16 {
+        return;
+    }
+    // Dialogue prose is full of English words. Those are not ResRefs. Looking
+    // each one up in the install is what made `kq graph` take hours.
+    if !catalog.contains(tok) && !module_roots.contains(tok) {
+        if let Some((base, ext)) = tok.rsplit_once('.') {
+            if ResType::from_extension(ext).is_some()
+                && (catalog.contains(base) || module_roots.contains(base))
+            {
+                out.insert(base.to_string());
+            } else if looks_like_resref_token(tok) {
+                if let Some(m) = missing {
+                    m.insert(tok.to_string());
+                }
+            }
+            return;
+        }
+        if looks_like_resref_token(tok) {
+            if let Some(m) = missing {
+                if tok.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    m.insert(tok.to_string());
+                }
+            }
+        }
         return;
     }
     if !resolve_in_scope(index, loaded, module_entries, scope, tok).is_empty()
@@ -1118,6 +1781,11 @@ fn consider_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::Decoded;
+
+    fn catalog_of(index: &Index) -> HashSet<String> {
+        index.resources.iter().map(|r| r.resref.clone()).collect()
+    }
 
     fn global_lookup(
         resrefs: &[&str],
@@ -1283,6 +1951,87 @@ mod tests {
     }
 
     #[test]
+    fn scoped_loaded_currentgame_rim_beats_mod_for_git() {
+        use serde_json::json;
+        let git = ResType::from_extension("git").unwrap().0;
+        let mut index: Index = serde_json::from_value(json!({
+            "schema": 3,
+            "root": "/game",
+            "kind": "install",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": [
+                "/game/modules/end_m01aa.mod",
+                "/game/modules/end_m01aa.rim"
+            ],
+            "sources": [
+                {"kind":"module-mod","label":"end_m01aa.mod","precedence":100,"module_root":"end_m01aa"},
+                {"kind":"module-rim","label":"end_m01aa.rim","precedence":50,"module_root":"end_m01aa"}
+            ],
+            "resources": [
+                {"resref":"m01aa","restype":git,"file":0,"offset":0,"size":100,"source":0},
+                {"resref":"m01aa","restype":git,"file":1,"offset":0,"size":99,"source":1}
+            ],
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+        let loaded = scoped_loaded(&index);
+        let git_ty = ResType::from_extension("git").unwrap();
+        let id = *loaded
+            .get(&(Some("end_m01aa".into()), "m01aa".into(), git_ty))
+            .unwrap();
+        assert_eq!(
+            index.source(&index.resources[id as usize]).label,
+            "end_m01aa.rim",
+            "CURRENTGAME NAME.rim must beat NAME.mod for IFO/ARE/GIT"
+        );
+        assert!(is_overshadowed(&index, &loaded, 0));
+        assert!(!is_overshadowed(&index, &loaded, 1));
+    }
+
+    #[test]
+    fn lips_loc_copy_overshadowed_by_module_lip() {
+        // Engine LipSync loads VO_ResRef via resman (type 3004). Module .mod
+        // beats lips/NAME_loc.mod (which already says so). Graph unused must
+        // not list the lips/ copy as a leftover.
+        use serde_json::json;
+        let lip = ResType::from_extension("lip").unwrap().0;
+        let mut index: Index = serde_json::from_value(json!({
+            "schema": 3,
+            "root": "/game",
+            "kind": "install",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": [
+                "/game/modules/ebo_m12aa.mod",
+                "/game/lips/ebo_m12aa_loc.mod"
+            ],
+            "sources": [
+                {"kind":"module-mod","label":"ebo_m12aa.mod","precedence":100,"module_root":"ebo_m12aa"},
+                {"kind":"lips","label":"ebo_m12aa_loc.mod","precedence":300,"module_root":"ebo_m12aa"}
+            ],
+            "resources": [
+                {"resref":"nm12aabast01000_","restype":lip,"file":0,"offset":0,"size":496,"source":0},
+                {"resref":"nm12aabast01000_","restype":lip,"file":1,"offset":0,"size":421,"source":1}
+            ],
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+        let loaded = scoped_loaded(&index);
+        assert!(
+            !is_overshadowed(&index, &loaded, 0),
+            "module lip is the copy LipSync loads"
+        );
+        assert!(
+            is_overshadowed(&index, &loaded, 1),
+            "lips/NAME_loc.mod lip must be overshadowed, not unused"
+        );
+        assert_eq!(overshadowed_by(&index, &loaded, 1), Some(0));
+    }
+
+    #[test]
     fn scoped_loaded_override_beats_module_in_global_and_lookup() {
         let index = fixture_two_modules_shared_are();
         let loaded = scoped_loaded(&index);
@@ -1298,6 +2047,21 @@ mod tests {
     }
 
     #[test]
+    fn overshadowed_id_set_matches_per_id_lookup() {
+        let index = fixture_two_modules_shared_are();
+        let loaded = scoped_loaded(&index);
+        let set = overshadowed_id_set(&index, &loaded);
+        for i in 0..index.resources.len() as u32 {
+            assert_eq!(
+                set.contains(&i),
+                is_overshadowed(&index, &loaded, i),
+                "id {i}"
+            );
+        }
+        assert!(!set.is_empty(), "fixture has shadowed rim/module copies");
+    }
+
+    #[test]
     fn tokens_ignore_self_and_stars() {
         let (index, loaded, entries) = global_lookup(&["n_bastila", "k_ai_master", "danm13"]);
         let roots = HashSet::new();
@@ -1309,6 +2073,7 @@ mod tests {
             &entries,
             &None,
             &roots,
+            &catalog_of(&index),
             "n_bastila",
             Some("utc"),
             &mut out,
@@ -1373,6 +2138,7 @@ mod tests {
             &HashMap::new(),
             &scope,
             &roots,
+            &catalog_of(&index),
             "m01aa",
             Some("are"),
             &mut out,
@@ -1474,6 +2240,82 @@ mod tests {
         assert!(seen.contains(&2)); // end_trask
         assert!(!seen.contains(&3)); // other_mod_utc
         assert!(!seen.contains(&4)); // orphan
+    }
+
+    #[test]
+    fn reachable_module_scans_unplaced_gff_script_slots() {
+        use serde_json::json;
+        let git = ResType::from_extension("git").unwrap().0;
+        let utt = ResType::from_extension("utt").unwrap().0;
+        let ncs = ResType::from_extension("ncs").unwrap().0;
+        let mut index: Index = serde_json::from_value(json!({
+            "schema": 3,
+            "root": "/game",
+            "kind": "install",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": ["/game/modules/unk_m44ac.mod"],
+            "sources": [
+                {"kind":"module-mod","label":"unk_m44ac.mod","precedence":100,"module_root":"unk_m44ac"}
+            ],
+            "resources": [
+                {"resref":"m44ac","restype":git,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"unk44_exit","restype":utt,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"k_punk_exit","restype":ncs,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"k_punk_party","restype":ncs,"file":0,"offset":0,"size":1,"source":0}
+            ],
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+        let loaded = scoped_loaded(&index);
+        let module_entries = module_entry_ids(&index, &loaded);
+        let mut edges = HashMap::new();
+        // GIT does not mention the trigger. The UTT still names the script.
+        edges.insert(1, HashSet::from(["k_punk_exit".into()]));
+        let seeds = module_entries.get("unk_m44ac").cloned().unwrap_or_default();
+        let (seen, _parent) = bfs(&index, &seeds, &edges, &loaded, &module_entries);
+        assert!(seen.contains(&1), "unplaced UTT is a module GFF entry");
+        assert!(seen.contains(&2), "ScriptOnEnter on that UTT is live");
+        assert!(!seen.contains(&3), "packed NCS with no GFF slot stays dead");
+    }
+
+    #[test]
+    fn global_dlg_reaches_module_only_ncs() {
+        use serde_json::json;
+        let dlg = ResType::from_extension("dlg").unwrap().0;
+        let ncs = ResType::from_extension("ncs").unwrap().0;
+        let mut index: Index = serde_json::from_value(json!({
+            "schema": 3,
+            "root": "/game",
+            "kind": "install",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": [
+                "/game/Override/k_hcan_dialog.dlg",
+                "/game/modules/ebo_m12aa.mod"
+            ],
+            "sources": [
+                {"kind":"override","label":"Override","precedence":0,"module_root":null},
+                {"kind":"module-mod","label":"ebo_m12aa.mod","precedence":100,"module_root":"ebo_m12aa"}
+            ],
+            "resources": [
+                {"resref":"k_hcan_dialog","restype":dlg,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"k_swg_gizka01","restype":ncs,"file":1,"offset":0,"size":1,"source":1}
+            ],
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+        let loaded = scoped_loaded(&index);
+        let module_entries = module_entry_ids(&index, &loaded);
+        let mut edges = HashMap::new();
+        edges.insert(0, HashSet::from(["k_swg_gizka01".into()]));
+        let (seen, _) = bfs(&index, &[0], &edges, &loaded, &module_entries);
+        assert!(
+            seen.contains(&1),
+            "Override DLG Active/Script must reach module-only NCS"
+        );
     }
 
     fn fixture_end_and_m12() -> Index {
@@ -1610,6 +2452,7 @@ mod tests {
             &entries,
             &None,
             &roots,
+            &catalog_of(&index),
             "k_sup_gohawk",
             Some("ncs"),
             &mut out,
@@ -1630,6 +2473,7 @@ mod tests {
             &entries,
             &None,
             &roots,
+            &catalog_of(&index),
             "k_ai_master",
             Some("ncs"),
             &mut out,
@@ -1655,6 +2499,13 @@ mod tests {
         assert!(K1_SCRIPTS.contains(&"k_hen_retreat"));
         assert!(K1_SCRIPTS.contains(&"k_trg_transfail"));
         assert!(K1_SCRIPTS.contains(&"k_def_pathfail01"));
+    }
+
+    #[test]
+    fn engine_guis_include_mainmenu_layout() {
+        assert!(ENGINE_GUIS.contains(&"mainmenu"));
+        assert!(ENGINE_GUIS.contains(&"loadscreen"));
+        assert!(ENGINE_GUIS.contains(&"partyselection"));
     }
 
     #[test]
@@ -1685,6 +2536,7 @@ mod tests {
             &entries,
             &None,
             &roots,
+            &catalog_of(&index),
             "k_ai_master",
             Some("ncs"),
             StrRefMode::None,
@@ -1720,6 +2572,7 @@ mod tests {
                 module_entries: &entries,
                 scope: &None,
                 module_roots: &roots,
+                catalog: &catalog_of(&index),
                 self_ref: "row",
                 self_ext: None,
                 mode: StrRefMode::None,
@@ -1735,14 +2588,196 @@ mod tests {
     }
 
     #[test]
+    fn conversation_field_allows_self_resref_to_reach_dlg() {
+        // Engine: UTC Conversation is a DLG ResRef. BioWare often sets it equal
+        // to the template name. Blind self-skip dropped that edge.
+        use serde_json::json;
+        let utc = ResType::from_extension("utc").unwrap().0;
+        let dlg = ResType::from_extension("dlg").unwrap().0;
+        let mut index: Index = serde_json::from_value(json!({
+            "schema": 3,
+            "root": "/game",
+            "kind": "install",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": ["/game/modules/m.mod"],
+            "sources": [
+                {"kind":"module-mod","label":"m.mod","precedence":100,"module_root":"m"}
+            ],
+            "resources": [
+                {"resref":"npc01","restype":utc,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"npc01","restype":dlg,"file":0,"offset":0,"size":1,"source":0}
+            ],
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+        let loaded = scoped_loaded(&index);
+        let entries = module_entry_ids(&index, &loaded);
+        let roots = HashSet::new();
+        let cat = catalog_of(&index);
+        let mut mentions = HashSet::new();
+        let mut strrefs = HashSet::new();
+        let mut missing = HashSet::new();
+        walk_gff_value(
+            &GffValue::Str("npc01".into()),
+            Some("Conversation"),
+            &index,
+            &loaded,
+            &entries,
+            &Some("m".into()),
+            &roots,
+            &cat,
+            "npc01",
+            Some("utc"),
+            StrRefMode::Gff,
+            &mut mentions,
+            &mut strrefs,
+            &mut missing,
+        );
+        assert!(
+            mentions.contains("npc01"),
+            "Conversation==template must edge to same-named dlg; mentions={mentions:?}"
+        );
+    }
+
+    #[test]
+    fn vo_resref_field_edges_even_when_matching_dlg_name() {
+        // LipSync loads type 3004 with the VO ResRef; rare but legal for the
+        // ResRef string to equal the DLG name.
+        use serde_json::json;
+        let dlg = ResType::from_extension("dlg").unwrap().0;
+        let lip = ResType::from_extension("lip").unwrap().0;
+        let mut index: Index = serde_json::from_value(json!({
+            "schema": 3,
+            "root": "/game",
+            "kind": "install",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": ["/game/modules/m.mod", "/game/lips/m_loc.mod"],
+            "sources": [
+                {"kind":"module-mod","label":"m.mod","precedence":100,"module_root":"m"},
+                {"kind":"lips","label":"m_loc.mod","precedence":300,"module_root":null}
+            ],
+            "resources": [
+                {"resref":"chat","restype":dlg,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"chat","restype":lip,"file":1,"offset":0,"size":1,"source":1}
+            ],
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+        let loaded = scoped_loaded(&index);
+        let entries = module_entry_ids(&index, &loaded);
+        let roots = HashSet::new();
+        let cat = catalog_of(&index);
+        let mut mentions = HashSet::new();
+        let mut strrefs = HashSet::new();
+        let mut missing = HashSet::new();
+        walk_gff_value(
+            &GffValue::Str("chat".into()),
+            Some("VO_ResRef"),
+            &index,
+            &loaded,
+            &entries,
+            &Some("m".into()),
+            &roots,
+            &cat,
+            "chat",
+            Some("dlg"),
+            StrRefMode::Gff,
+            &mut mentions,
+            &mut strrefs,
+            &mut missing,
+        );
+        assert!(
+            mentions.contains("chat"),
+            "VO_ResRef must reach .lip even when equal to dlg name; mentions={mentions:?}"
+        );
+    }
+
+    #[test]
     fn consider_token_skips_pure_numeric() {
         let (index, loaded, entries) = global_lookup(&["3"]);
         let roots = HashSet::new();
         let mut out = HashSet::new();
         consider_token(
-            "3", &index, &loaded, &entries, &None, &roots, "x", None, &mut out, None,
+            "3", &index, &loaded, &entries, &None, &roots, &catalog_of(&index), "x", None, &mut out, None, false,
         );
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn consider_token_skips_english_prose() {
+        let (index, loaded, entries) = global_lookup(&["k_ai_master"]);
+        let roots = HashSet::new();
+        let cat = catalog_of(&index);
+        let mut mentions = HashSet::new();
+        let mut missing = HashSet::new();
+        consider_token(
+            "the",
+            &index,
+            &loaded,
+            &entries,
+            &None,
+            &roots,
+            &cat,
+            "k_ai_master",
+            Some("dlg"),
+            &mut mentions,
+            Some(&mut missing),
+            false,
+        );
+        consider_token(
+            "because",
+            &index,
+            &loaded,
+            &entries,
+            &None,
+            &roots,
+            &cat,
+            "k_ai_master",
+            Some("dlg"),
+            &mut mentions,
+            Some(&mut missing),
+            false,
+        );
+        assert!(mentions.is_empty(), "mentions={mentions:?}");
+        assert!(missing.is_empty(), "missing={missing:?}");
+    }
+
+    #[test]
+    fn locstring_prose_is_not_tokenized() {
+        let (index, loaded, entries) = global_lookup(&["k_ai_master"]);
+        let roots = HashSet::new();
+        let cat = catalog_of(&index);
+        let mut mentions = HashSet::new();
+        let mut strrefs = HashSet::new();
+        let mut missing = HashSet::new();
+        let mut substrings = std::collections::BTreeMap::new();
+        substrings.insert(0, "the because k_ai_master".into());
+        walk_gff_value(
+            &GffValue::LocString {
+                strref: 42,
+                substrings,
+            },
+            Some("Text"),
+            &index,
+            &loaded,
+            &entries,
+            &None,
+            &roots,
+            &cat,
+            "dlg_foo",
+            Some("dlg"),
+            StrRefMode::Gff,
+            &mut mentions,
+            &mut strrefs,
+            &mut missing,
+        );
+        assert!(mentions.is_empty(), "mentions={mentions:?}");
+        assert!(missing.is_empty(), "missing={missing:?}");
+        assert!(strrefs.contains(&42));
     }
 
     #[test]
@@ -1758,6 +2793,7 @@ mod tests {
             &entries,
             &None,
             &roots,
+            &catalog_of(&index),
             "k_sup_gohawk",
             Some("ncs"),
             &mut mentions,
@@ -1786,10 +2822,12 @@ mod tests {
             &module_entries,
             &scope,
             &roots,
+            &catalog_of(&index),
             "module",
             Some("ifo"),
             &mut mentions,
             Some(&mut missing),
+            false,
         );
         assert!(
             mentions.is_empty(),
@@ -1811,10 +2849,12 @@ mod tests {
             &entries,
             &None,
             &roots,
+            &catalog_of(&index),
             "module",
             Some("ifo"),
             &mut mentions,
             Some(&mut missing),
+            false,
         );
         let mut missing_by: HashMap<u32, HashSet<String>> = HashMap::new();
         missing_by.entry(42).or_default().extend(missing);
@@ -1828,6 +2868,82 @@ mod tests {
         assert!(!is_scan_source(nss));
         let ncs = ResType::from_extension("ncs").unwrap();
         assert!(is_scan_source(ncs));
+    }
+
+    #[test]
+    fn nwscript_comments_are_not_compiler_input() {
+        let src = "ExecuteScript(\"live\"); // ExecuteScript(\"dead\")\n/* #include \"nope\" */\n#include \"k_inc_generic\"\n";
+        let (body, incs) = nss_body_and_includes(src);
+        assert!(body.contains("live"));
+        assert!(!body.contains("dead"));
+        assert!(!body.contains("k_inc_generic"));
+        assert_eq!(incs, vec!["k_inc_generic".to_string()]);
+        assert!(parse_include_line("#include \"k_inc_switch.nss\"").as_deref() == Some("k_inc_switch"));
+    }
+
+    #[test]
+    fn include_nss_tree_feeds_ncs_mentions() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let foo = dir.path().join("k_inc_foo.nss");
+        let bar = dir.path().join("k_inc_bar.nss");
+        let dummy = dir.path().join("k_punk_exit.ncs");
+        std::fs::write(&foo, "#include \"k_inc_bar\"\n").unwrap();
+        std::fs::write(&bar, "ExecuteScript(\"k_punk_exit\");\n").unwrap();
+        std::fs::write(&dummy, [0u8]).unwrap();
+        let nss = ResType::from_extension("nss").unwrap().0;
+        let ncs = ResType::from_extension("ncs").unwrap().0;
+        let foo_sz = std::fs::metadata(&foo).unwrap().len();
+        let bar_sz = std::fs::metadata(&bar).unwrap().len();
+        let mut index: Index = serde_json::from_value(json!({
+            "schema": 3,
+            "root": dir.path().to_string_lossy(),
+            "kind": "install",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": [
+                foo.to_string_lossy(),
+                bar.to_string_lossy(),
+                dummy.to_string_lossy()
+            ],
+            "sources": [
+                {"kind":"chitin","label":"scripts.bif","precedence":700,"module_root":null}
+            ],
+            "resources": [
+                {"resref":"k_inc_foo","restype":nss,"file":0,"offset":0,"size":foo_sz,"source":0},
+                {"resref":"k_inc_bar","restype":nss,"file":1,"offset":0,"size":bar_sz,"source":0},
+                {"resref":"k_punk_exit","restype":ncs,"file":2,"offset":0,"size":1,"source":0}
+            ],
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+        let loaded = scoped_loaded(&index);
+        let entries = HashMap::new();
+        let roots = HashSet::new();
+        let catalog = catalog_of(&index);
+        let mut mentions = HashSet::new();
+        let mut missing = HashSet::new();
+        let mut seen = HashSet::new();
+        take_nss_tree(
+            "#include \"k_inc_foo\"\n",
+            &index,
+            &loaded,
+            &entries,
+            &None,
+            &roots,
+            &catalog,
+            "k_ai_master",
+            &mut mentions,
+            &mut missing,
+            &mut seen,
+        );
+        assert!(
+            mentions.contains("k_punk_exit"),
+            "nested include ExecuteScript must mention the target; mentions={mentions:?}"
+        );
+        assert!(!mentions.contains("k_inc_foo"));
+        assert!(!mentions.contains("k_inc_bar"));
     }
 
     #[test]

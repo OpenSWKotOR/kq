@@ -13,6 +13,8 @@ pub enum SourceKind {
     /// A `<root>.mod` in `modules/`.
     ModuleMod,
     /// A `<root>.rim`, `<root>_s.rim` or `<root>_dlg.erf` in `modules/`.
+    /// Bare `<root>.rim` is the CURRENTGAME IFO/ARE/GIT table and outranks
+    /// [`ModuleMod`]; `_s.rim` / `_dlg.erf` lose to `.mod`.
     ModuleRim,
     /// A `.mod` in `lips/`.
     Lips,
@@ -33,11 +35,12 @@ pub enum SourceKind {
 
 impl SourceKind {
     /// Lower wins. Gaps leave room for per-source tie-breaks (texture pack
-    /// order, `.mod` shadowing `.rim`) without renumbering.
+    /// order; CURRENTGAME `NAME.rim` uses precedence 50 instead of 200).
     pub fn base_precedence(self) -> u32 {
         match self {
             SourceKind::Override => 0,
             SourceKind::ModuleMod => 100,
+            // Default for `_s.rim` / `_dlg.erf`. Bare `NAME.rim` uses 50.
             SourceKind::ModuleRim => 200,
             SourceKind::Lips => 300,
             SourceKind::TexturePack => 400,

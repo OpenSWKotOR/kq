@@ -5,6 +5,8 @@
 ### Changed
 
 * `kq graph` is the live inventory (used / unused / overshadowed). `kq unused`, `kq leftovers`, and `kq export` are gone. `--format` is `lists` | `tree` | `summary`.
+* `kq graph` leftover list is one unused ResRef per type: packing copies of a reached script are not unused. NCS mentions come from decompiled NSS (and includes), not opcode names.
+* `kq cat` of `.ncs` prints decompiled NSS unless `--disasm` / JSON.
 * `kq ls --loaded` and `kq grep --loaded` keep only the copy the game loads. `kq which` marks that copy with `*` and the rest `(overshadowed)`.
 
 ### Bug Fixes

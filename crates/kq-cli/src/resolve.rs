@@ -110,7 +110,7 @@ mod tests {
         let target = resolve_explicit(root.path()).unwrap();
         match target {
             Target::Install(p) => assert_eq!(p, steam.canonicalize().unwrap_or(steam)),
-            other => panic!("expected Install(steamassets), got non-install"),
+            _ => panic!("expected Install(steamassets), got non-install"),
         }
     }
 

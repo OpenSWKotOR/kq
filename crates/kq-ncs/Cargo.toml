@@ -9,4 +9,5 @@ description = "NCS → NSS decompiler (DeNCS algorithm port)."
 [dependencies]
 kq-format = { path = "../kq-format" }
 kq-index = { path = "../kq-index" }
+kotor-ncs = { workspace = true }
 kotor-ncs-isa = { workspace = true }

@@ -37,7 +37,8 @@ pub struct Args {
     #[arg(long, default_value_t = 0, value_name = "N")]
     depth: usize,
 
-    /// Print install-relative paths only, one per line.
+    /// Print unused install-relative paths only, one per line (plus used with
+    /// `--format lists`). Overshadowed copies are omitted.
     #[arg(short = 'q', long)]
     quiet: bool,
 
@@ -181,18 +182,36 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let index = ctx.index()?;
     let graph = live::build(&index)?;
     let json = graph_wants_json(std::env::args());
+    let loaded_map = live::scoped_loaded(&index);
+    let hidden = live::overshadowed_id_set(&index, &loaded_map);
 
     if let Some(name) = args.name.as_deref() {
-        return show_named(ctx, &index, &graph, name, args.missing, json);
+        return show_named(
+            ctx,
+            &index,
+            &loaded_map,
+            &hidden,
+            &graph,
+            name,
+            args.missing,
+            json,
+        );
     }
 
     let in_scope = candidate_ids(&index, &args.filter, args.no_assets)?;
     let in_scope_set: HashSet<u32> = in_scope.iter().copied().collect();
-    let unused_ids = leftover_ids(&index, &graph, &args.filter, args.no_assets)?;
+    let unused_ids = leftover_ids(
+        &index,
+        &graph,
+        &loaded_map,
+        &hidden,
+        &args.filter,
+        args.no_assets,
+    )?;
     let mut overshadowed_ids: Vec<u32> = in_scope
         .iter()
         .copied()
-        .filter(|&id| live::is_overshadowed(&index, id))
+        .filter(|id| hidden.contains(id))
         .collect();
     overshadowed_ids.sort_unstable();
 
@@ -200,41 +219,58 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         .used_ids
         .iter()
         .copied()
-        .filter(|id| in_scope_set.contains(id) && !live::is_overshadowed(&index, *id))
+        .filter(|id| in_scope_set.contains(id) && !hidden.contains(id))
         .collect();
     used_ids.sort_unstable();
-
-    let used_strings = used_tlk_records(&graph);
-    let unused_strings = unused_tlk_records(&graph);
-
-    let used_paths = paths_for(&index, &used_ids);
-    let unused_paths = paths_for(&index, &unused_ids);
-    let overshadowed_pairs = hidden_pairs(&index, &overshadowed_ids);
-    let talk_lines = talk_first_lines(&unused_strings);
 
     if json {
         return write_json(
             ctx,
             &index,
+            &loaded_map,
+            &hidden,
             &graph,
             &in_scope,
             &used_ids,
             &unused_ids,
             &overshadowed_ids,
-            used_strings,
-            unused_strings,
+            used_tlk_records(&graph),
+            unused_tlk_records(&graph),
         );
     }
 
     let include_used_list = matches!(args.format, Some(Format::Lists));
+    let need_paths = !matches!(args.format, Some(Format::Summary));
+    let used_paths = if include_used_list {
+        sorted_paths(&index, &used_ids)
+    } else {
+        Vec::new()
+    };
+    let unused_paths = if need_paths {
+        sorted_paths(&index, &unused_ids)
+    } else {
+        Vec::new()
+    };
+    let overshadowed_pairs = if need_paths {
+        let mut pairs = hidden_pairs(&index, &loaded_map, &overshadowed_ids);
+        pairs.sort();
+        pairs
+    } else {
+        Vec::new()
+    };
     if args.quiet {
         return write_quiet(
             apply_limit_slice(&used_paths, args.limit),
             apply_limit_slice(&unused_paths, args.limit),
-            apply_limit_slice(&overshadowed_pairs, args.limit),
             include_used_list,
         );
     }
+
+    let talk_lines = if need_paths {
+        unused_talk_lines(&graph)
+    } else {
+        Vec::new()
+    };
 
     let stdout = std::io::stdout();
     let mut w = BufWriter::new(stdout.lock());
@@ -247,6 +283,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
                 "{}",
                 format_counts(used_ids.len(), unused_ids.len(), overshadowed_ids.len())
             )?;
+            w.flush()?;
             if args.filter.types.is_empty() {
                 writeln!(w)?;
                 writeln!(w, "{:<8} {:>8} {:>12}", "type", "unused", "bytes")?;
@@ -265,6 +302,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
                     graph.seeds.len()
                 ))
             )?;
+            w.flush()?;
             for seed in &graph.seeds {
                 writeln!(w, "  seed  {seed}")?;
             }
@@ -285,21 +323,19 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
             );
             if !lists.is_empty() {
                 writeln!(w)?;
-                write!(w, "{lists}")?;
+                write_list_sections(&mut w, &lists)?;
             }
         }
         Some(Format::Lists) | None => {
-            write!(
-                w,
-                "{}",
-                format_inventory_text(
-                    &used_paths,
-                    &unused_paths,
-                    &overshadowed_pairs,
-                    &talk_lines,
-                    include_used_list,
-                    args.limit,
-                )
+            write_inventory(
+                &mut w,
+                used_ids.len(),
+                &used_paths,
+                &unused_paths,
+                &overshadowed_pairs,
+                &talk_lines,
+                include_used_list,
+                args.limit,
             )?;
         }
     }
@@ -311,6 +347,8 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
 fn write_json(
     ctx: &Ctx,
     index: &kq_index::Index,
+    loaded: &HashMap<(live::Scope, String, kq_format::ResType), u32>,
+    hidden: &HashSet<u32>,
     graph: &LiveGraph,
     in_scope: &[u32],
     used_ids: &[u32],
@@ -321,21 +359,21 @@ fn write_json(
 ) -> Result<i32> {
     let mut catalog: Vec<Row<'_>> = in_scope
         .iter()
-        .map(|&id| resource_row(index, id, graph, copy_status(index, graph, id)))
+        .map(|&id| resource_row(index, loaded, id, graph, copy_status(hidden, graph, id)))
         .collect();
     catalog.sort_by(|a, b| a.path.cmp(&b.path));
 
     let used_resources: Vec<_> = used_ids
         .iter()
-        .map(|&id| resource_row(index, id, graph, "used"))
+        .map(|&id| resource_row(index, loaded, id, graph, "used"))
         .collect();
     let unused_resources: Vec<_> = unused_ids
         .iter()
-        .map(|&id| resource_row(index, id, graph, "unused"))
+        .map(|&id| resource_row(index, loaded, id, graph, "unused"))
         .collect();
     let overshadowed_resources: Vec<_> = overshadowed_ids
         .iter()
-        .map(|&id| resource_row(index, id, graph, "overshadowed"))
+        .map(|&id| resource_row(index, loaded, id, graph, "overshadowed"))
         .collect();
 
     let report = Report {
@@ -564,7 +602,6 @@ fn print_tree(
 fn write_quiet(
     used: &[String],
     unused: &[String],
-    overshadowed: &[(String, String)],
     include_used: bool,
 ) -> Result<i32> {
     let stdout = std::io::stdout();
@@ -575,9 +612,6 @@ fn write_quiet(
         }
     }
     for path in unused {
-        writeln!(w, "{path}")?;
-    }
-    for (path, _) in overshadowed {
         writeln!(w, "{path}")?;
     }
     w.flush()?;
@@ -600,12 +634,16 @@ fn normalize_name(name: &str) -> String {
     }
 }
 
-fn ids_for_name(index: &kq_index::Index, graph: &LiveGraph, name: &str) -> Vec<u32> {
+fn ids_for_name(
+    loaded: &HashMap<(live::Scope, String, kq_format::ResType), u32>,
+    graph: &LiveGraph,
+    name: &str,
+) -> Vec<u32> {
     let name = normalize_name(name);
-    let mut ids: Vec<u32> = live::scoped_loaded(index)
-        .into_iter()
+    let mut ids: Vec<u32> = loaded
+        .iter()
         .filter(|((_, rr, _), _)| *rr == name)
-        .map(|(_, id)| id)
+        .map(|(_, &id)| id)
         .collect();
     if ids.is_empty() {
         if let Some(list) = graph.module_entries.get(&name) {
@@ -660,12 +698,14 @@ fn sorted_set(set: Option<&HashSet<String>>) -> Vec<String> {
 fn show_named(
     ctx: &Ctx,
     index: &kq_index::Index,
+    loaded: &HashMap<(live::Scope, String, kq_format::ResType), u32>,
+    hidden: &HashSet<u32>,
     graph: &LiveGraph,
     name: &str,
     show_missing: bool,
     json: bool,
 ) -> Result<i32> {
-    let ids = ids_for_name(index, graph, name);
+    let ids = ids_for_name(loaded, graph, name);
     if ids.is_empty() {
         if !json {
             eprintln!("kq: no resource or module named `{name}`");
@@ -698,7 +738,7 @@ fn show_named(
             resref: &r.resref,
             restype: r.restype.to_string(),
             module: source.module_root.as_deref(),
-            status: copy_status(index, graph, id),
+            status: copy_status(hidden, graph, id),
             parent_chain: chain_paths,
             edges: sorted_set(graph.edges.get(&id)),
             missing: missing_by_path.get(&path).cloned().unwrap_or_default(),
@@ -778,6 +818,76 @@ fn format_list_sections(
     sections.join("\n")
 }
 
+fn write_list_sections(w: &mut impl Write, text: &str) -> Result<()> {
+    write!(w, "{text}")?;
+    Ok(())
+}
+
+fn write_inventory(
+    w: &mut impl Write,
+    used_count: usize,
+    used: &[String],
+    unused: &[String],
+    overshadowed: &[(String, String)],
+    unused_talk: &[(i64, String)],
+    include_used_list: bool,
+    limit: usize,
+) -> Result<()> {
+    write!(
+        w,
+        "{}",
+        format_counts(used_count, unused.len(), overshadowed.len())
+    )?;
+    w.flush()?;
+
+    let mut wrote_section = false;
+    if include_used_list && !used.is_empty() {
+        writeln!(w)?;
+        writeln!(w, "Used ({})", used.len())?;
+        for path in apply_limit_slice(used, limit) {
+            writeln!(w, "  {path}")?;
+        }
+        wrote_section = true;
+    }
+    if !unused.is_empty() {
+        if wrote_section {
+            writeln!(w)?;
+        } else {
+            writeln!(w)?;
+        }
+        writeln!(w, "Unused ({})", unused.len())?;
+        for path in apply_limit_slice(unused, limit) {
+            writeln!(w, "  {path}")?;
+        }
+        wrote_section = true;
+    }
+    if !overshadowed.is_empty() {
+        if wrote_section {
+            writeln!(w)?;
+        } else {
+            writeln!(w)?;
+        }
+        writeln!(w, "Overshadowed ({})", overshadowed.len())?;
+        for (path, hidden) in apply_limit_slice(overshadowed, limit) {
+            writeln!(w, "  {path}  (hidden by {hidden})")?;
+        }
+        wrote_section = true;
+    }
+    if !unused_talk.is_empty() {
+        if wrote_section {
+            writeln!(w)?;
+        } else {
+            writeln!(w)?;
+        }
+        writeln!(w, "Unused talk ({})", unused_talk.len())?;
+        for (strref, line) in apply_limit_slice(unused_talk, limit) {
+            writeln!(w, "  {strref}  {line}")?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn format_inventory_text(
     used: &[String],
     unused: &[String],
@@ -796,8 +906,8 @@ fn format_inventory_text(
     out
 }
 
-fn copy_status(index: &kq_index::Index, graph: &LiveGraph, id: u32) -> &'static str {
-    if live::is_overshadowed(index, id) {
+fn copy_status(hidden: &HashSet<u32>, graph: &LiveGraph, id: u32) -> &'static str {
+    if hidden.contains(&id) {
         "overshadowed"
     } else if graph.used_ids.contains(&id) {
         "used"
@@ -820,19 +930,54 @@ fn candidate_ids(index: &kq_index::Index, filter: &Filter, no_assets: bool) -> R
 fn leftover_ids(
     index: &kq_index::Index,
     graph: &LiveGraph,
+    loaded_map: &HashMap<(live::Scope, String, kq_format::ResType), u32>,
+    hidden: &HashSet<u32>,
     filter: &Filter,
     no_assets: bool,
 ) -> Result<Vec<u32>> {
-    let loaded = live::scoped_loaded_id_set(index);
+    let loaded: HashSet<u32> = loaded_map.values().copied().collect();
     let mut candidates = candidate_ids(index, filter, no_assets)?;
     candidates.retain(|&i| {
-        loaded.contains(&i) && !graph.used_ids.contains(&i) && !live::is_overshadowed(index, i)
+        loaded.contains(&i) && !graph.used_ids.contains(&i) && !hidden.contains(&i)
+    });
+    // Install-level unused list: if *any* scope's copy was reached, other
+    // modules' packed copies of the same ResRef+type are not "dead content"
+    // for the inventory report (they are packing waste). Per-copy status on
+    // `kq graph NAME` / JSON rows is unchanged.
+    let mut used_keys: HashSet<(String, kq_format::ResType)> = HashSet::new();
+    // Count a ResRef used even when the reached copy is `overshadowed` by a
+    // higher-precedence *module* packing of the same name. Engine resman only
+    // searches the current module's capsules; `CSWCCreature::LipSync` / dialog
+    // `Script` on a chitin DLG still load `scripts.bif` / `lips/` when that
+    // module is not loaded. Example: `k_hbas_dialog` → `k_hbas_check01` is
+    // live, but `unk_m44ac.mod` packing the same NCS must not make the script
+    // look unused.
+    for &id in &graph.used_ids {
+        let r = &index.resources[id as usize];
+        used_keys.insert((r.resref.clone(), r.restype));
+    }
+    candidates.retain(|&i| {
+        let r = &index.resources[i as usize];
+        !used_keys.contains(&(r.resref.clone(), r.restype))
+    });
+    // One row per dead ResRef+type. Prefer Override/ then install-relative path
+    // so the kept copy is stable and the one most useful to open.
+    candidates.sort_by(|&a, &b| {
+        let pa = index.virt_path(&index.resources[a as usize]);
+        let pb = index.virt_path(&index.resources[b as usize]);
+        pa.cmp(&pb)
+    });
+    let mut seen_dead: HashSet<(String, kq_format::ResType)> = HashSet::new();
+    candidates.retain(|&i| {
+        let r = &index.resources[i as usize];
+        seen_dead.insert((r.resref.clone(), r.restype))
     });
     Ok(candidates)
 }
 
 fn resource_row<'a>(
     index: &'a kq_index::Index,
+    loaded: &HashMap<(live::Scope, String, kq_format::ResType), u32>,
     id: u32,
     graph: &LiveGraph,
     status: &'static str,
@@ -853,7 +998,7 @@ fn resource_row<'a>(
         })
         .unwrap_or_default();
     let hidden_by =
-        live::overshadowed_by(index, id).map(|p| index.virt_path(&index.resources[p as usize]));
+        live::overshadowed_by(index, loaded, id).map(|p| index.virt_path(&index.resources[p as usize]));
     Row {
         id,
         name: r.filename(),
@@ -900,22 +1045,34 @@ fn paths_for(index: &kq_index::Index, ids: &[u32]) -> Vec<String> {
         .collect()
 }
 
-fn hidden_pairs(index: &kq_index::Index, ids: &[u32]) -> Vec<(String, String)> {
-    ids.iter()
-        .filter_map(|&id| {
-            let path = index.virt_path(&index.resources[id as usize]);
-            let hidden = live::overshadowed_by(index, id)
-                .map(|p| index.virt_path(&index.resources[p as usize]))?;
-            Some((path, hidden))
+fn sorted_paths(index: &kq_index::Index, ids: &[u32]) -> Vec<String> {
+    let mut paths = paths_for(index, ids);
+    paths.sort();
+    paths
+}
+
+fn unused_talk_lines(graph: &LiveGraph) -> Vec<(i64, String)> {
+    graph
+        .leftover_strings()
+        .into_iter()
+        .map(|row| {
+            let line = row.text.lines().next().unwrap_or("");
+            (row.strref, one_line(line, 120))
         })
         .collect()
 }
 
-fn talk_first_lines(rows: &[TlkRecord]) -> Vec<(i64, String)> {
-    rows.iter()
-        .map(|row| {
-            let line = row.text.lines().next().unwrap_or("");
-            (row.strref, one_line(line, 120))
+fn hidden_pairs(
+    index: &kq_index::Index,
+    loaded: &HashMap<(live::Scope, String, kq_format::ResType), u32>,
+    ids: &[u32],
+) -> Vec<(String, String)> {
+    ids.iter()
+        .filter_map(|&id| {
+            let path = index.virt_path(&index.resources[id as usize]);
+            let hidden = live::overshadowed_by(index, loaded, id)
+                .map(|p| index.virt_path(&index.resources[p as usize]))?;
+            Some((path, hidden))
         })
         .collect()
 }
@@ -1000,7 +1157,8 @@ mod tests {
     #[test]
     fn named_node_lists_parent_and_missing() {
         let (index, graph) = fixture_named_script();
-        let ids = ids_for_name(&index, &graph, "k_sup_gohawk");
+        let loaded = live::scoped_loaded(&index);
+        let ids = ids_for_name(&loaded, &graph, "k_sup_gohawk");
         assert_eq!(ids, vec![2]);
         let chain = parent_chain(&graph.parent, 2);
         assert_eq!(chain, vec![2, 1]);
@@ -1015,8 +1173,9 @@ mod tests {
     #[test]
     fn named_module_root_uses_module_entries() {
         let (index, graph) = fixture_named_script();
-        assert_eq!(ids_for_name(&index, &graph, "end_m01aa"), vec![0]);
-        assert!(ids_for_name(&index, &graph, "no_such").is_empty());
+        let loaded = live::scoped_loaded(&index);
+        assert_eq!(ids_for_name(&loaded, &graph, "end_m01aa"), vec![0]);
+        assert!(ids_for_name(&loaded, &graph, "no_such").is_empty());
     }
 
     fn graph_help() -> String {
@@ -1125,15 +1284,17 @@ mod tests {
     #[test]
     fn json_status_is_unused_not_leftover() {
         let (index, graph) = fixture_named_script();
-        let status = copy_status(&index, &graph, 2);
+        let loaded = live::scoped_loaded(&index);
+        let hidden = live::overshadowed_id_set(&index, &loaded);
+        let status = copy_status(&hidden, &graph, 2);
         assert_eq!(status, "used");
 
         let mut unused_graph = graph;
         unused_graph.used_ids.clear();
-        let status = copy_status(&index, &unused_graph, 2);
+        let status = copy_status(&hidden, &unused_graph, 2);
         assert_eq!(status, "unused");
 
-        let row = resource_row(&index, 2, &unused_graph, "unused");
+        let row = resource_row(&index, &loaded, 2, &unused_graph, "unused");
         let v = serde_json::to_value(&row).unwrap();
         assert_eq!(v["status"], "unused");
         assert!(v.get(concat!("winn", "er")).is_none(), "{v}");
@@ -1172,13 +1333,137 @@ mod tests {
     fn candidate_ids_include_overshadowed_copies() {
         let index = fixture_module_copy_overshadowed_by_override();
         let module_copy_id = 0u32;
-        assert!(live::is_overshadowed(&index, module_copy_id));
+        let loaded = live::scoped_loaded(&index);
+        assert!(live::is_overshadowed(&index, &loaded, module_copy_id));
         let ids = candidate_ids(&index, &Filter::default(), false).unwrap();
         assert!(
             ids.contains(&module_copy_id),
             "overshadowed copies must stay in the report"
         );
         assert!(ids.contains(&1));
+    }
+
+    #[test]
+    fn leftover_ids_count_used_even_if_chitin_copy_is_hidden_by_module_pack() {
+        // Dialog Script on a chitin DLG reaches scripts.bif NCS; a module also
+        // packs the same ResRef. Engine only searches that module while it is
+        // loaded — the script is still live. Unused must not list it.
+        use serde_json::json;
+        let ncs = kq_format::ResType::from_extension("ncs").unwrap().0;
+        let mut index: kq_index::Index = serde_json::from_value(json!({
+            "schema": 3,
+            "root": "/game",
+            "kind": "install",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": ["/game/data/scripts.bif", "/game/modules/unk_m44ac.mod"],
+            "sources": [
+                {"kind":"chitin","label":"scripts.bif","precedence":700,"module_root":null},
+                {"kind":"module-mod","label":"unk_m44ac.mod","precedence":100,"module_root":"unk_m44ac"}
+            ],
+            "resources": [
+                {"resref":"k_hbas_check01","restype":ncs,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"k_hbas_check01","restype":ncs,"file":1,"offset":0,"size":1,"source":1}
+            ],
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+        let mut used_ids = HashSet::new();
+        used_ids.insert(0); // chitin copy reached from global dlg
+        let graph = LiveGraph {
+            catalog: HashSet::new(),
+            seeds: vec![],
+            seed_ids: vec![],
+            reachable: HashSet::new(),
+            used_ids,
+            parent: HashMap::new(),
+            edges: HashMap::new(),
+            missing: HashMap::new(),
+            module_entries: HashMap::new(),
+            used: HashSet::new(),
+            used_strrefs: HashSet::new(),
+            tlk: vec![],
+            scanned: 0,
+        };
+        let loaded = live::scoped_loaded(&index);
+        let hidden = live::overshadowed_id_set(&index, &loaded);
+        let unused = leftover_ids(
+            &index,
+            &graph,
+            &loaded,
+            &hidden,
+            &Filter::default(),
+            false,
+        )
+        .unwrap();
+        assert!(
+            !unused.contains(&1),
+            "module packing of a reached script is not unused; got {unused:?}"
+        );
+        assert!(!unused.contains(&0));
+    }
+
+    #[test]
+    fn leftover_ids_drop_packing_siblings_of_used_resref() {
+        use serde_json::json;
+        let ncs = kq_format::ResType::from_extension("ncs").unwrap().0;
+        let mut index: kq_index::Index = serde_json::from_value(json!({
+            "schema": 3,
+            "root": "/game",
+            "kind": "install",
+            "game": "k1",
+            "fingerprint": 0,
+            "files": ["/game/modules/a.mod", "/game/modules/b.mod"],
+            "sources": [
+                {"kind":"module-mod","label":"a.mod","precedence":100,"module_root":"a"},
+                {"kind":"module-mod","label":"b.mod","precedence":100,"module_root":"b"}
+            ],
+            "resources": [
+                {"resref":"shared","restype":ncs,"file":0,"offset":0,"size":1,"source":0},
+                {"resref":"shared","restype":ncs,"file":1,"offset":0,"size":1,"source":1},
+                {"resref":"dead","restype":ncs,"file":1,"offset":0,"size":1,"source":1}
+            ],
+            "warnings": []
+        }))
+        .unwrap();
+        index.reindex();
+        let mut used_ids = HashSet::new();
+        used_ids.insert(0); // a.mod/shared.ncs reached
+        let graph = LiveGraph {
+            catalog: HashSet::new(),
+            seeds: vec![],
+            seed_ids: vec![],
+            reachable: HashSet::new(),
+            used_ids,
+            parent: HashMap::new(),
+            edges: HashMap::new(),
+            missing: HashMap::new(),
+            module_entries: HashMap::new(),
+            used: HashSet::new(),
+            used_strrefs: HashSet::new(),
+            tlk: vec![],
+            scanned: 0,
+        };
+        let loaded = live::scoped_loaded(&index);
+        let hidden = live::overshadowed_id_set(&index, &loaded);
+        let unused = leftover_ids(
+            &index,
+            &graph,
+            &loaded,
+            &hidden,
+            &Filter::default(),
+            false,
+        )
+        .unwrap();
+        assert!(
+            !unused.contains(&1),
+            "b.mod/shared.ncs packing sibling of used copy must not list as unused"
+        );
+        assert!(
+            unused.contains(&2),
+            "dead.ncs never reached anywhere must remain unused"
+        );
     }
 
     #[test]
@@ -1199,7 +1484,17 @@ mod tests {
             tlk: vec![],
             scanned: 0,
         };
-        let unused = leftover_ids(&index, &graph, &Filter::default(), false).unwrap();
+        let loaded = live::scoped_loaded(&index);
+        let hidden = live::overshadowed_id_set(&index, &loaded);
+        let unused = leftover_ids(
+            &index,
+            &graph,
+            &loaded,
+            &hidden,
+            &Filter::default(),
+            false,
+        )
+        .unwrap();
         assert!(
             !unused.contains(&0),
             "overshadowed module copy is not unused"
@@ -1228,7 +1523,8 @@ mod tests {
             tlk: vec![],
             scanned: 0,
         };
-        let row = resource_row(&index, 0, &graph, "overshadowed");
+        let loaded = live::scoped_loaded(&index);
+        let row = resource_row(&index, &loaded, 0, &graph, "overshadowed");
         let v = serde_json::to_value(&row).unwrap();
         assert_eq!(v["status"], "overshadowed");
         assert_eq!(v["hidden_by"], "Override/shared.ncs");
@@ -1239,11 +1535,15 @@ mod tests {
     #[test]
     fn named_status_is_used_unused_or_overshadowed() {
         let (index, graph) = fixture_named_script();
-        assert_eq!(copy_status(&index, &graph, 2), "used");
+        let loaded = live::scoped_loaded(&index);
+        let hidden = live::overshadowed_id_set(&index, &loaded);
+        assert_eq!(copy_status(&hidden, &graph, 2), "used");
         let index = fixture_module_copy_overshadowed_by_override();
+        let loaded = live::scoped_loaded(&index);
+        let hidden = live::overshadowed_id_set(&index, &loaded);
         assert_eq!(
             copy_status(
-                &index,
+                &hidden,
                 &LiveGraph {
                     catalog: HashSet::new(),
                     seeds: vec![],
@@ -1263,6 +1563,25 @@ mod tests {
             ),
             "overshadowed"
         );
+    }
+
+    #[test]
+    fn write_inventory_matches_format_inventory_text() {
+        let used = vec!["modules/a/foo.ncs".into()];
+        let unused = vec!["modules/danm13.mod/k_dead.ncs".into()];
+        let overshadowed = vec![(
+            "modules/danm13.rim/k_ai_master.ncs".into(),
+            "Override/k_ai_master.ncs".into(),
+        )];
+        let talk = vec![(12345i64, "Some leftover line".into())];
+        let mut buf = Vec::new();
+        write_inventory(&mut buf, 1, &used, &unused, &overshadowed, &talk, false, 0)
+            .unwrap();
+        let got = String::from_utf8(buf).unwrap();
+        let expect = format_inventory_text(&used, &unused, &overshadowed, &talk, false, 0);
+        assert_eq!(got, expect);
+        assert!(!got.contains("/run/"), "{got}");
+        assert!(got.contains("  modules/danm13.mod/k_dead.ncs\n"), "{got}");
     }
 
     #[test]

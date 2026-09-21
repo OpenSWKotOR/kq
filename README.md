@@ -297,9 +297,9 @@ kq cache clear
    directories) and `dialog.tlk` at the install root.
 2. **Index.** Read every archive header and every loose file. Each resource
    becomes a `(name, type, file, offset, size, source)` row. Sources are
-   ordered the way the engine resolves them: Override beats a `.mod` beats
-   the `.rim` / `_s.rim` / `_dlg.erf` trio beats lips, texture packs,
-   `rims/`, streams, then the base `chitin.key` BIFs.
+   ordered the way the engine resolves them: Override beats `NAME.rim`
+   (CURRENTGAME IFO/ARE/GIT) beats `.mod` beats `_s.rim` / `_dlg.erf`, then
+   lips, texture packs, `rims/`, streams, then the base `chitin.key` BIFs.
 3. **Cache.** The index is written under `$KQ_CACHE_DIR` or the platform
    cache directory (`~/.cache/kq` on Linux). The cache key is a fingerprint
    of names, sizes and mtimes — not file contents — so a 1.3 GB set of BIFs

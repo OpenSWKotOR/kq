@@ -89,8 +89,9 @@ type (`utc`, `dlg`, `2da`, `ncs`, …). Those resources live in:
 | Place | Typical path | Wins over |
 |-------|----------------|-----------|
 | Override | `Override/*.utc` | everything |
-| Module `.mod` | `modules/danm13.mod` | the rim trio |
-| Module rims | `danm13.rim`, `danm13_s.rim`, `danm13_dlg.erf` | lips / packs / BIFs |
+| Module CURRENTGAME rim | `modules/danm13.rim` (IFO/ARE/GIT) | `.mod` |
+| Module `.mod` | `modules/danm13.mod` | `_s.rim` / `_dlg.erf` |
+| Module script rims | `danm13_s.rim`, `danm13_dlg.erf` | lips / packs / BIFs |
 | Lips | `lips/*.mod` | texture packs |
 | Texture packs | `texturepacks/swpc_tex_*.erf` | `rims/` |
 | Global rims (K1) | `rims/*.rim` | streams |
