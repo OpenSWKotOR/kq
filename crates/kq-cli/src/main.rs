@@ -16,15 +16,12 @@ mod cmd {
     pub mod cache;
     pub mod cat;
     pub mod delta;
-    pub mod export;
     pub mod graph;
     pub mod grep;
     pub mod info;
-    pub mod leftovers;
     pub mod ls;
     pub mod merge;
     pub mod patch;
-    pub mod unused;
     pub mod which;
 }
 
@@ -143,17 +140,10 @@ enum Command {
     /// Search resource contents as text.
     #[command(visible_alias = "search")]
     Grep(cmd::grep::Args),
-    /// Write every indexed resource as JSON under `<install>_json/`.
-    Export(cmd::export::Args),
     /// Inspect or clear the index cache.
     Cache(cmd::cache::Args),
-    /// List leftover resources the live graph never reaches.
-    Unused(cmd::unused::Args),
-    /// Live mention hierarchy and leftovers in one report.
+    /// Used, unused, and overshadowed copies the live graph can load.
     Graph(cmd::graph::Args),
-    /// Catalog every ResRef and talk-table row, then list what the live graph never reaches.
-    #[command(visible_alias = "leftover")]
-    Leftovers(cmd::leftovers::Args),
 }
 
 fn main() -> ExitCode {
@@ -174,11 +164,8 @@ fn main() -> ExitCode {
         Command::Patch(a) => cmd::patch::run(&ctx, a),
         Command::Merge(a) => cmd::merge::run(&ctx, a),
         Command::Grep(a) => cmd::grep::run(&ctx, a),
-        Command::Export(a) => cmd::export::run(&ctx, a),
         Command::Cache(a) => cmd::cache::run(&ctx, a),
-        Command::Unused(a) => cmd::unused::run(&ctx, a),
         Command::Graph(a) => cmd::graph::run(&ctx, a),
-        Command::Leftovers(a) => cmd::leftovers::run(&ctx, a),
     };
 
     match result {

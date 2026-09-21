@@ -1,4 +1,4 @@
-//! Shared JSON envelope for decoded resources (`cat`, `export`).
+//! Shared JSON envelope for decoded resources (`cat`).
 
 use serde::Serialize;
 use serde_json::Value as J;
@@ -52,8 +52,4 @@ pub fn build_resource_json<'a>(
         size: r.size,
         content: decoded_to_json(decoded),
     }
-}
-
-pub fn export_relpath(index: &Index, r: &Resource) -> String {
-    format!("{}.json", index.virt_path(r))
 }
