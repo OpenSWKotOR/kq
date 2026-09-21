@@ -17,9 +17,9 @@ pub struct Args {
     #[command(flatten)]
     filter: Filter,
 
-    /// Show only the copy the game would actually load.
+    /// Only the copy the game loads.
     #[arg(long)]
-    winners: bool,
+    loaded: bool,
 
     /// Stop after this many results. 0 means no limit.
     #[arg(short = 'n', long, default_value_t = 0, value_name = "N")]
@@ -51,7 +51,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let mut selected = args
         .filter
         .select(&index, args.pattern.as_deref().unwrap_or(""))?;
-    if args.winners {
+    if args.loaded {
         Filter::dedup_winners(&index, &mut selected);
     }
 
@@ -100,4 +100,48 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     w.flush()?;
 
     Ok(if total == 0 { exit::NO_MATCH } else { exit::OK })
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::{CommandFactory, Parser};
+
+    fn ls_help() -> String {
+        let mut cmd = crate::Cli::command();
+        let mut buf = Vec::new();
+        cmd.find_subcommand_mut("ls")
+            .unwrap()
+            .write_long_help(&mut buf)
+            .unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn loaded_flag_is_accepted() {
+        let cli = crate::Cli::try_parse_from(["kq", "ls", "--loaded"]).unwrap();
+        let crate::Command::Ls(args) = cli.command else {
+            panic!("expected ls");
+        };
+        assert!(args.loaded);
+    }
+
+    #[test]
+    fn winners_flag_is_rejected() {
+        let parsed = crate::Cli::try_parse_from(["kq", "ls", "--winners"]);
+        assert!(
+            parsed.is_err(),
+            "kq ls --winners must clap-error, not alias"
+        );
+    }
+
+    #[test]
+    fn help_uses_loaded_not_winner() {
+        let help = ls_help();
+        let lowered = help.to_ascii_lowercase();
+        assert!(help.contains("--loaded"), "{help}");
+        assert!(!help.contains("--winners"), "{help}");
+        assert!(!lowered.contains("winner"), "{help}");
+        assert!(!lowered.contains("loser"), "{help}");
+        assert!(help.contains("the copy the game loads"), "{help}");
+    }
 }

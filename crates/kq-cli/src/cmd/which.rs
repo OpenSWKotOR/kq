@@ -1,9 +1,9 @@
-//! `kq which` — which copy of a resource actually loads, and what it shadows.
+//! `kq which` — which copy of a resource the game loads, and what it overshadows.
 //!
 //! KotOR resolves a ResRef by walking locations in a fixed order, so the same
 //! name can exist in Override, in a module, and in a BIF, with only one of
 //! them ever loading. Getting that wrong is the most common way a mod appears
-//! not to work, so the whole chain is shown, not just the winner.
+//! not to work, so the whole chain is shown, not just the copy the game loads.
 
 use anyhow::Result;
 use serde::Serialize;
@@ -120,21 +120,30 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
 
     let o = &ctx.out;
     for h in &hits {
-        let marker = if h.active { o.bold("*") } else { o.dim(" ") };
-        println!(
-            "{} {}  {}",
-            marker,
-            o.accent(&h.path),
-            o.dim(&format!("{} bytes", h.size))
-        );
+        println!("{}", text_hit_line(o, h));
     }
     if hits.len() > 1 {
-        println!(
-            "\n{}",
-            o.dim("* is the copy the game loads; the rest are shadowed.")
-        );
+        println!("\n{}", o.dim(text_footer()));
     }
     Ok(exit::OK)
+}
+
+fn text_hit_line(o: &crate::Out, h: &Hit) -> String {
+    let marker = if h.active { o.bold("*") } else { o.dim(" ") };
+    let mut line = format!(
+        "{} {}  {}",
+        marker,
+        o.accent(&h.path),
+        o.dim(&format!("{} bytes", h.size))
+    );
+    if !h.active {
+        line.push_str(&format!("  {}", o.dim("(overshadowed)")));
+    }
+    line
+}
+
+fn text_footer() -> &'static str {
+    "* is the copy the game loads; the rest are overshadowed."
 }
 
 fn format_is_json(format: Option<OutputFormat>, default_json: bool) -> bool {
@@ -179,5 +188,76 @@ mod tests {
         assert_eq!(args.restype.as_deref(), Some("ncs"));
         assert_eq!(args.resref, "k_pend_chest02");
         assert_eq!(args.format, Some(OutputFormat::Json));
+    }
+
+    fn plain_out() -> crate::Out {
+        crate::Out {
+            json: false,
+            text: true,
+            color: false,
+        }
+    }
+
+    fn hit(path: &str, size: u64, active: bool) -> Hit {
+        Hit {
+            name: "foo.ncs".into(),
+            path: path.into(),
+            restype: "ncs".into(),
+            source: "override",
+            container: "Override".into(),
+            module: None,
+            file: path.into(),
+            offset: 0,
+            size,
+            active,
+        }
+    }
+
+    fn which_help() -> String {
+        use clap::CommandFactory;
+        let mut cmd = crate::Cli::command();
+        let mut buf = Vec::new();
+        cmd.find_subcommand_mut("which")
+            .unwrap()
+            .write_long_help(&mut buf)
+            .unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn loaded_copy_is_star_marked_without_overshadowed_suffix() {
+        let line = text_hit_line(&plain_out(), &hit("Override/foo.ncs", 12, true));
+        assert!(line.contains('*'), "{line}");
+        assert!(line.contains("Override/foo.ncs"), "{line}");
+        assert!(!line.contains("(overshadowed)"), "{line}");
+    }
+
+    #[test]
+    fn other_copies_carry_overshadowed_suffix_on_the_line() {
+        let line = text_hit_line(
+            &plain_out(),
+            &hit("modules/end_m01aa.mod/foo.ncs", 12, false),
+        );
+        assert!(line.contains("(overshadowed)"), "{line}");
+        assert!(!line.trim_start().starts_with('*'), "{line}");
+    }
+
+    #[test]
+    fn footer_explains_star_is_the_copy_the_game_loads() {
+        let footer = text_footer();
+        assert!(footer.contains("the copy the game loads"), "{footer}");
+        assert!(!footer.contains("the rest are shadowed."), "{footer}");
+        let lowered = footer.to_ascii_lowercase();
+        assert!(!lowered.contains("winner"), "{footer}");
+        assert!(!lowered.contains("loser"), "{footer}");
+    }
+
+    #[test]
+    fn help_names_the_copy_the_game_loads() {
+        let help = which_help();
+        let lowered = help.to_ascii_lowercase();
+        assert!(help.contains("the copy the game loads"), "{help}");
+        assert!(!lowered.contains("winner"), "{help}");
+        assert!(!lowered.contains("loser"), "{help}");
     }
 }

@@ -46,9 +46,9 @@ pub struct Args {
     #[arg(short = 'C', long, default_value_t = 0, value_name = "N")]
     context: usize,
 
-    /// Include only the copy the game would actually load.
+    /// Include only the copy the game loads.
     #[arg(long)]
-    winners: bool,
+    loaded: bool,
 
     /// Also search resource types with no known decoder, as raw bytes.
     ///
@@ -100,7 +100,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let mut selected = args
         .filter
         .select(&index, args.name.as_deref().unwrap_or(""))?;
-    if args.winners {
+    if args.loaded {
         Filter::dedup_winners(&index, &mut selected);
     }
     if !args.include_binary {
@@ -259,6 +259,7 @@ fn is_searchable(t: kq_format::ResType) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use serde_json::json;
 
     #[test]
@@ -323,5 +324,45 @@ mod tests {
             matched: Some(false),
         };
         assert_eq!(serde_json::to_value(hit).unwrap()["matched"], false);
+    }
+
+    fn grep_help() -> String {
+        use clap::CommandFactory;
+        let mut cmd = crate::Cli::command();
+        let mut buf = Vec::new();
+        cmd.find_subcommand_mut("grep")
+            .unwrap()
+            .write_long_help(&mut buf)
+            .unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn loaded_flag_is_accepted() {
+        let cli = crate::Cli::try_parse_from(["kq", "grep", "ActionUseSkill", "--loaded"]).unwrap();
+        let crate::Command::Grep(args) = cli.command else {
+            panic!("expected grep");
+        };
+        assert!(args.loaded);
+    }
+
+    #[test]
+    fn winners_flag_is_rejected() {
+        let parsed = crate::Cli::try_parse_from(["kq", "grep", "ActionUseSkill", "--winners"]);
+        assert!(
+            parsed.is_err(),
+            "kq grep --winners must clap-error, not alias"
+        );
+    }
+
+    #[test]
+    fn help_uses_loaded_not_winner() {
+        let help = grep_help();
+        let lowered = help.to_ascii_lowercase();
+        assert!(help.contains("--loaded"), "{help}");
+        assert!(!help.contains("--winners"), "{help}");
+        assert!(!lowered.contains("winner"), "{help}");
+        assert!(!lowered.contains("loser"), "{help}");
+        assert!(help.contains("the copy the game loads"), "{help}");
     }
 }

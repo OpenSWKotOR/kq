@@ -129,7 +129,7 @@ enum Command {
     /// List resources.
     #[command(visible_aliases = ["list", "find"])]
     Ls(cmd::ls::Args),
-    /// Show every copy of a resource, in the order the game resolves them.
+    /// Show every copy of a resource; `*` is the copy the game loads.
     Which(cmd::which::Args),
     /// Print a resource.
     Cat(cmd::cat::Args),
@@ -279,7 +279,7 @@ mod cli_tests {
             "*.ncs",
             "--type",
             "ncs",
-            "--winners",
+            "--loaded",
             "--text",
         ])
         .unwrap();
