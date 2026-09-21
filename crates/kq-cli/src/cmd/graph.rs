@@ -54,6 +54,25 @@ pub struct Args {
     missing: bool,
 }
 
+/// Graph prints JSON only when `--json` is on argv and `--text` is not.
+/// Other commands keep the crate-wide clap default of `--json`.
+fn graph_wants_json<I, S>(argv: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut saw_json = false;
+    let mut saw_text = false;
+    for arg in argv {
+        match arg.as_ref() {
+            "--json" => saw_json = true,
+            "--text" => saw_text = true,
+            _ => {}
+        }
+    }
+    saw_json && !saw_text
+}
+
 #[derive(Serialize)]
 struct TlkRecord {
     strref: i64,
@@ -161,9 +180,10 @@ struct NamedReport<'a> {
 pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let index = ctx.index()?;
     let graph = live::build(&index)?;
+    let json = graph_wants_json(std::env::args());
 
     if let Some(name) = args.name.as_deref() {
-        return show_named(ctx, &index, &graph, name, args.missing);
+        return show_named(ctx, &index, &graph, name, args.missing, json);
     }
 
     let in_scope = candidate_ids(&index, &args.filter, args.no_assets)?;
@@ -192,7 +212,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let overshadowed_pairs = hidden_pairs(&index, &overshadowed_ids);
     let talk_lines = talk_first_lines(&unused_strings);
 
-    if ctx.out.json {
+    if json {
         return write_json(
             ctx,
             &index,
@@ -649,10 +669,11 @@ fn show_named(
     graph: &LiveGraph,
     name: &str,
     show_missing: bool,
+    json: bool,
 ) -> Result<i32> {
     let ids = ids_for_name(index, graph, name);
     if ids.is_empty() {
-        if !ctx.out.json {
+        if !json {
             eprintln!("kq: no resource or module named `{name}`");
         }
         return Ok(exit::NO_MATCH);
@@ -683,7 +704,7 @@ fn show_named(
         });
     }
 
-    if ctx.out.json {
+    if json {
         ctx.out.json_value(&NamedReport { name, nodes })?;
         return Ok(exit::OK);
     }
@@ -1252,5 +1273,38 @@ mod tests {
         assert!(!help.contains("--summary"), "{help}");
         assert!(!lowered.contains("winner"), "{help}");
         assert!(!lowered.contains("loser"), "{help}");
+    }
+
+    #[test]
+    fn graph_wants_json_iff_json_on_argv_and_not_text() {
+        // Crate-wide clap `--json` defaults true; graph must ignore that default.
+        assert!(
+            !graph_wants_json(["kq", "graph"]),
+            "bare kq graph must be text"
+        );
+        assert!(
+            !graph_wants_json(["kq", "graph", "--format", "summary"]),
+            "kq graph --format summary must be text"
+        );
+        assert!(
+            !graph_wants_json(["kq", "graph", "--text"]),
+            "kq graph --text must be text"
+        );
+        assert!(
+            graph_wants_json(["kq", "--json", "graph"]),
+            "kq --json graph must be JSON"
+        );
+        assert!(
+            graph_wants_json(["kq", "graph", "--json"]),
+            "kq graph --json must be JSON"
+        );
+        assert!(
+            !graph_wants_json(["kq", "--json", "--text", "graph"]),
+            "--text wins over --json"
+        );
+        assert!(
+            !graph_wants_json(["kq", "graph", "--json", "--text"]),
+            "--text after --json is still text"
+        );
     }
 }

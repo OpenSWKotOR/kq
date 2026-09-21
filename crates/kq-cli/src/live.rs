@@ -212,6 +212,7 @@ pub struct LiveGraph {
     pub catalog: HashSet<String>,
     pub seeds: Vec<String>,
     pub seed_ids: Vec<u32>,
+    #[allow(dead_code)]
     pub reachable: HashSet<String>,
     /// Winner resource indices the live walk actually entered.
     pub used_ids: HashSet<u32>,
@@ -224,6 +225,7 @@ pub struct LiveGraph {
     /// Module-root → scoped entry resource ids (ifo/are/git/pth).
     pub module_entries: HashMap<String, Vec<u32>>,
     /// ResRefs of `used_ids`, plus VO names on used talk-table rows.
+    #[allow(dead_code)]
     pub used: HashSet<String>,
     pub used_strrefs: HashSet<i64>,
     pub tlk: Vec<TlkRow>,
