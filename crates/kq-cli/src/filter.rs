@@ -1,5 +1,5 @@
-//! Selecting resources by name, type, module and source — the criteria `ls`,
-//! `grep` and `winners` all share.
+//! Selecting resources by name, type, module and source — the criteria `ls`
+//! and `grep` all share.
 
 use anyhow::Result;
 use kq_format::ResType;
@@ -90,7 +90,7 @@ impl Filter {
     }
 
     /// Keep only the highest-precedence copy of each (resref, type).
-    pub fn dedup_winners(index: &Index, selected: &mut Vec<u32>) {
+    pub fn dedup_loaded(index: &Index, selected: &mut Vec<u32>) {
         selected.dedup_by(|&mut a, &mut b| {
             let (ra, rb) = (&index.resources[a as usize], &index.resources[b as usize]);
             ra.resref == rb.resref && ra.restype == rb.restype

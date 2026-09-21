@@ -96,7 +96,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
                 .or_else(|| module_git_alias(&index, &name, want, module))
                 // Module data commonly refers to stock scripts stored in a
                 // shared BIF. A compiled script has one unambiguous type, so
-                // after a module miss it is safe to use that global winner.
+                // after a module miss it is safe to use that global copy.
                 .or_else(|| module_script_fallback(&index, &name, want))
         }
         (None, None, None) => index.resolve(&name, want),

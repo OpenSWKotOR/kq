@@ -83,9 +83,9 @@ impl Index {
 
     /// Every resource with this ResRef, best match first.
     ///
-    /// Returning the whole chain rather than only the winner is deliberate:
-    /// "which copy of this actually loads, and what is it shadowing" is the
-    /// question people get wrong about KotOR.
+    /// Returning the whole chain rather than only the copy the game loads is
+    /// deliberate: "which copy of this actually loads, and what is it
+    /// shadowing" is the question people get wrong about KotOR.
     pub fn lookup(&self, resref: &str) -> &[u32] {
         self.lookup
             .get(&resref.to_ascii_lowercase())

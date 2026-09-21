@@ -17,18 +17,17 @@ module rim trio, lips, texture packs, `rims/`, streams, chitin BIFs,
 ```bash
 kq -i "$KQ_INSTALL" info --json
 kq -i "$KQ_INSTALL" which appearance.2da
-kq -i "$KQ_INSTALL" ls -t utc -m danm13 --winners
+kq -i "$KQ_INSTALL" ls -t utc -m danm13 --loaded
 kq -i "$KQ_INSTALL" cat n_bastila.utc --json
 kq -i "$KQ_INSTALL" cat appearance.2da --from 'data/2da.bif' -f gron
 kq -i "$KQ_INSTALL" grep Bastila -t dlg -n 10 --json
 kq -i "$KQ_INSTALL" grep --ignore-case GetObjectByTag -t ncs
 kq -i ./modules/danm13.mod ls -t git
-kq -i "$KQ_INSTALL" graph --summary
-kq -i "$KQ_INSTALL" graph --json | jq '.tree[0], .leftovers | length'
-kq -i "$KQ_INSTALL" graph --what leftovers -q
-kq -i "$KQ_INSTALL" unused -t utc -n 40
-kq -i "$KQ_INSTALL" leftovers --summary
-kq -i "$KQ_INSTALL" leftovers --what strings -n 40
+kq -i "$KQ_INSTALL" graph
+kq -i "$KQ_INSTALL" graph --format summary
+kq -i "$KQ_INSTALL" graph --format lists
+kq -i "$KQ_INSTALL" graph --json | jq '.unused.count, .overshadowed.count'
+kq -i "$KQ_INSTALL" graph end_m01aa
 kq -i "$KQ_INSTALL" delta appearance.2da --shadow
 kq -i "$KQ_INSTALL" --text delta n_bastila.utc --from Override --against templates.bif
 kq patch n_bastila.utc change.json -o patched.json

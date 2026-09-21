@@ -99,8 +99,9 @@ type (`utc`, `dlg`, `2da`, `ncs`, …). Those resources live in:
 | Talk table | `dialog.tlk` at the install root | (its own name only) |
 
 `kq` indexes every one of those places. When two resources share a name,
-`which` shows the whole chain and stars the winner. `ls --winners` and
-`grep --winners` keep only that winner.
+`which` shows the whole chain: `*` is the copy the game loads, and the
+other lines say `(overshadowed)`. `ls --loaded` and `grep --loaded`
+keep only that copy.
 
 Every listed path is relative to the install root. An archive
 (`.mod` / `.rim` / `.erf` / `.bif` / `.hak` / `.sav`) is a folder:
@@ -138,7 +139,8 @@ kq which appearance.2da
 ```
 
 `*` is the file the engine will open. The other lines are copies that
-never load unless you delete or rename the winner.
+never load unless you delete or rename that file. They print
+`(overshadowed)`.
 
 ### List Bastila-related creatures in Dantooine
 
@@ -159,7 +161,7 @@ kq cat n_bastila.utc --json | jq '.Tag'
 `outline` is for people. `gron` is for `rg` (every line carries its own
 address). `json` is for `jq`.
 
-To read a *shadowed* copy, not the winner:
+To read an overshadowed copy, not the one the game loads:
 
 ```bash
 kq cat appearance.2da --from 'data/2da.bif'
@@ -224,16 +226,15 @@ decoded.
 
 ```bash
 kq graph
-kq graph --json | jq '.tree[0]'
-kq graph --what leftovers -q > unused-paths.txt
-kq unused -q                      # leftover paths only (no tree)
-kq unused --summary
-kq unused -t utc
-kq leftovers --summary
-kq leftovers --what strings -n 40
+kq graph --format summary
+kq graph --format lists
+kq graph --format tree
+kq graph --json | jq '.unused.count, .overshadowed.count'
+kq graph -t utc
+kq graph end_m01aa
 ```
 
-Two commands share one graph:
+One command, `kq graph`, reports used, unused, and overshadowed copies.
 
 1. Catalog every ResRef in the install, and every `dialog.tlk` row.
 2. Scan GFF, 2DA, NCS, SSF, layouts (not textures or audio) for ResRef
@@ -248,28 +249,26 @@ Two commands share one graph:
    does the same for later areas. **Not** every folder under `modules/`,
    and **not** `rims/`.
 4. Breadth-first walk over *resource ids*, not shared ResRef strings.
-   Every module has a `module.ifo`; they are not one node. Leftovers are
-   winners the walk never entered. `.nss` is omitted (the engine loads
-   `.ncs`).
+   Every module has a `module.ifo`; they are not one node. Unused means
+   the copy the game would load, that the walk never entered.
+   Overshadowed copies are listed separately (`hidden_by` in JSON).
+   `.nss` is omitted (the engine loads `.ncs`).
 
-`kq unused` prints leftover resources — install-relative paths with
-archives as folders (`modules/danm13.mod/foo.utc`). `-q` prints only
-those paths, one per line. `kq leftovers` prints leftover
-talk-table rows (the usual “49k strings, which are unused?” question)
-and a leftover-resource count. `--what resources` is the same list as
-`unused`. `--catalog --json --summary` includes the seed list.
+Default text is three counts (`used` / `unused` / `overshadowed`), then
+unused paths, overshadowed paths (`hidden by …`), and unused talk-table
+rows. `--format lists` also prints used paths. `--format tree` is the
+reachability tree, then unused / overshadowed. `--format summary` is
+counts (and unused-by-type unless `-t`). `-q` prints paths only. JSON
+(`--json`) uses `status` of `used`, `unused`, or `overshadowed`.
+`kq graph NAME` zooms one ResRef or module root.
 
-What this is good for: leftover creature/item/placeable templates,
-unused dialogue files, scripts nothing live calls, and unused TLK rows
-that might be worth restoring.
+What this is good for: unused creature/item/placeable templates,
+dialogue files the walk never entered, scripts nothing live calls, and
+unused TLK rows that might be worth restoring.
 
 What it is not: a play-through. `GetObjectByTag("foo" + bar)` will not
 mark `foobar` used. Fonts hardcoded only in the TSL exe are not seeded.
-Textures, models and audio are **left out** of resource leftovers unless
-you pass `--assets`.
-
-`--summary` prints counts. `--json` is one object per leftover string
-(or resource), or one summary object with `--summary --json`.
+Textures, models and audio stay in the report unless `--no-assets`.
 
 ### One archive, no install
 
@@ -304,8 +303,8 @@ break the one-leaf-per-line rule.
 
 Unknown `-t` values are an error (exit 1), not a silent empty list.
 
-`--winners` drops shadowed duplicates after filtering. Use it when you
-care about what the game would load, not about every copy.
+`--loaded` keeps only the copy the game would load after filtering. Use
+it when you care about what actually loads, not about every copy.
 
 ## Caching
 

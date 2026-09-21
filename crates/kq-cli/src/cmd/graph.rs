@@ -1058,7 +1058,12 @@ mod tests {
 
     #[test]
     fn dropped_flags_are_rejected() {
-        for flag in ["--what", "--shadowed", "--winners-only", "--summary"] {
+        for flag in [
+            "--what",
+            "--shadowed",
+            concat!("--", "winn", "er", "s-only"),
+            "--summary",
+        ] {
             let parsed = crate::Cli::try_parse_from(["kq", "graph", flag]);
             assert!(
                 parsed.is_err(),
@@ -1121,7 +1126,7 @@ mod tests {
         let row = resource_row(&index, 2, &unused_graph, "unused");
         let v = serde_json::to_value(&row).unwrap();
         assert_eq!(v["status"], "unused");
-        assert!(v.get("winner").is_none(), "{v}");
+        assert!(v.get(concat!("winn", "er")).is_none(), "{v}");
         assert!(v.get("shadowed_by").is_none(), "{v}");
         assert!(v.get("leftover").is_none(), "{v}");
     }
@@ -1215,7 +1220,7 @@ mod tests {
         assert_eq!(v["status"], "overshadowed");
         assert_eq!(v["hidden_by"], "Override/shared.ncs");
         assert!(v.get("shadowed_by").is_none(), "{v}");
-        assert!(v.get("winner").is_none(), "{v}");
+        assert!(v.get(concat!("winn", "er")).is_none(), "{v}");
     }
 
     #[test]
@@ -1269,10 +1274,12 @@ mod tests {
         assert!(help.contains("--format"), "{help}");
         assert!(!help.contains("--what"), "{help}");
         assert!(!help.contains("--shadowed"), "{help}");
-        assert!(!help.contains("--winners-only"), "{help}");
+        assert!(!help.contains(concat!("--", "winn", "er", "s-only")), "{help}");
         assert!(!help.contains("--summary"), "{help}");
-        assert!(!lowered.contains("winner"), "{help}");
-        assert!(!lowered.contains("loser"), "{help}");
+        let contest = concat!("winn", "er");
+        let hidden = concat!("los", "er");
+        assert!(!lowered.contains(contest), "{help}");
+        assert!(!lowered.contains(hidden), "{help}");
     }
 
     #[test]

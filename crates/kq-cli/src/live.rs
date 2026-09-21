@@ -214,7 +214,7 @@ pub struct LiveGraph {
     pub seed_ids: Vec<u32>,
     #[allow(dead_code)]
     pub reachable: HashSet<String>,
-    /// Winner resource indices the live walk actually entered.
+    /// Resource indices the live walk actually entered.
     pub used_ids: HashSet<u32>,
     /// First parent seen during BFS (child → parent resource id).
     pub parent: HashMap<u32, u32>,

@@ -24,15 +24,13 @@ A directory *inside* an install still means the whole game. A named *file*
 |-------------|--------|
 | What's here? | `kq info` then `kq info --by-type` if they want counts |
 | Find a name | `kq ls <substr-or-glob>` |
-| Which file loads? | `kq which <resref>` — `*` is the winner |
+| Which file loads? | `kq which <resref>` — `*` is the copy the game loads; others `(overshadowed)` |
 | Read it | `kq cat <resref>` |
 | Compare two copies | `kq delta A B` / `kq delta RESREF --shadow` |
 | Apply a delta | `kq patch TARGET delta.json` |
 | Three-way merge | `kq merge BASE OURS THEIRS` |
 | Search inside | `kq grep <pattern>` |
-| Reachability tree + leftovers | `kq graph` / `kq graph --json` |
-| Never reached (resources) | `kq unused -q` / `kq graph --what leftovers -q` |
-| Leftover TLK strings | `kq leftovers` / `kq leftovers --what strings` |
+| Used / unused / overshadowed | `kq graph` / `kq graph --format summary` / `kq graph --json` |
 
 Always pass `-i` unless `KQ_INSTALL` is set or cwd is inside the install.
 
@@ -40,15 +38,15 @@ Always pass `-i` unless `KQ_INSTALL` is set or cwd is inside the install.
 
 **Global:** `-i/--install`, `--json`, `--color`, `--no-cache`, `--refresh`.
 
-**ls / grep filters:** `-t/--type`, `-m/--module`, `-s/--source`, `--winners`.
+**ls / grep filters:** `-t/--type`, `-m/--module`, `-s/--source`, `--loaded`.
 
 **ls:** `-n <N>`, `-q`.
 
 **cat:** `-t`, `-f outline|gron|json|raw`, `--raw`, `--from <container-label>`.
 
-**grep:** `--ignore-case` (no `-i`), `-F`, `-l`, `--winners`, `--include-binary`, `-n`.
+**grep:** `--ignore-case` (no `-i`), `-F`, `-l`, `--loaded`, `--include-binary`, `-n`.
 
-**graph / unused / leftovers:** `--summary`, `-q`, `-n`, `--assets`, `--depth`. graph also has `--what used|leftovers|both`.
+**graph:** `--format lists|tree|summary` (omit = default text), `-q`, `-n`, `--no-assets`, `--depth`. `kq graph NAME` zooms one ResRef. Text unless `--json`.
 
 If you need a flag not listed here, run `kq <cmd> --help`. Do not invent flags.
 

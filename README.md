@@ -37,6 +37,7 @@ formats it understands into text:
 - **print** a resource as a readable tree, as `path = value` lines, or as JSON
   (`kq cat`)
 - **search** decoded contents with a regex (`kq grep`)
+- **inventory** used, unused, and overshadowed copies (`kq graph`)
 
 It is not a save editor, a compiler, a GUI, or a replacement for the Holocron
 Toolset. It is the `rg`/`jq` of a KotOR install.
@@ -144,7 +145,7 @@ globs.
 ```bash
 kq ls bastila
 kq ls 'k_ai_*' -t ncs
-kq ls -t utc -m danm13 --winners
+kq ls -t utc -m danm13 --loaded
 kq ls -s override -q          # names only
 kq ls -n 20                   # first 20
 ```
@@ -156,7 +157,7 @@ Filters (also work on `grep`):
 | `-t`, `--type utc` | resource type (repeatable) |
 | `-m`, `--module danm13` | module root (repeatable) |
 | `-s`, `--source override` | source kind (repeatable) |
-| `--winners` | only the copy the game would load |
+| `--loaded` | only the copy the game would load |
 
 Source kinds: `override`, `module-mod`, `module-rim`, `lips`,
 `texturepack`, `rims`, `stream`, `chitin`, `talktable`, `loose`
@@ -164,7 +165,8 @@ Source kinds: `override`, `module-mod`, `module-rim`, `lips`,
 
 ### `kq which <resref>`
 
-Show every copy of a name, in engine resolve order. `*` marks the winner.
+Show every copy of a name, in engine resolve order. `*` is the copy the game
+loads. Other copies say `(overshadowed)`.
 
 ```bash
 kq which appearance.2da
@@ -245,21 +247,30 @@ Use `--ignore-case`.
 By default `grep` only reads types it can decode. `--include-binary` also
 searches everything else as raw bytes (slow on a full texture pack).
 
-### `kq unused` / `kq leftovers`
+### `kq graph [NAME]`
 
-`kq unused` lists leftover **resources**. `kq leftovers` is the inverse
-pipeline: catalog every ResRef and every `dialog.tlk` row, build the same
-mention graph, then print what the engine never reaches — leftover
-**strings** by default.
+Live inventory of this install: used, unused, and overshadowed copies.
+Default text is three counts, then unused / overshadowed / unused talk
+lists. JSON only if `--json` is on the command line.
 
 ```bash
-kq graph                           # reachability tree + leftover paths
-kq graph --json                    # nested tree + leftover arrays
-kq graph --what leftovers -q       # leftover paths only
-kq graph --depth 0                 # unlimited tree depth
-kq unused -q                      # every unused path, one per line
-kq unused --summary
+kq graph
+kq graph --format summary
+kq graph --format lists
+kq graph --format tree
+kq graph --json
+kq graph end_m01aa
 ```
+
+| `--format` | What you get |
+|------------|----------------|
+| *(omit)* | counts, then unused, overshadowed, unused talk |
+| `lists` | the same, plus a `Used` path list |
+| `tree` | reachability tree, then unused / overshadowed |
+| `summary` | counts (and unused-by-type unless `-t`) |
+
+`kq graph NAME` zooms one ResRef or module root. JSON `status` is `used`,
+`unused`, or `overshadowed`. Overshadowed rows include `hidden_by`.
 
 On a full install this is a *live graph*, not “mentioned anywhere.” Seeds
 are engine-hardcoded names (`dialog.tlk`, `feat.2da`, `end_m01aa`, default
@@ -267,8 +278,8 @@ scripts, `StartingModule` in the ini). Isolated A↔B pairs stay unused.
 Nothing in `rims/` is treated as live just because it is on disk.
 
 This is still a mention scan, not a runtime trace. Scripts that build
-names at runtime will not count. Textures and models are omitted from
-resource leftovers unless `--assets`.
+names at runtime will not count. Textures and models stay in the report
+unless `--no-assets`.
 
 ### `kq cache`
 
@@ -335,7 +346,8 @@ located instruction tree (`….instructions[123].name = "GetObjectByTag"`).
 ## Scripting
 
 `--json` on any command. `ls` and `grep` emit one JSON object per line
-(JSONL). `info`, `which` and `cache` emit one object.
+(JSONL). `info`, `which` and `cache` emit one object. `kq graph` is text
+unless `--json` is on the command line.
 
 Exit codes (stable; scripts should branch on these, not on stderr text):
 

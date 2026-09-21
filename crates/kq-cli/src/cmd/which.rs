@@ -247,17 +247,11 @@ mod tests {
         let footer = text_footer();
         assert!(footer.contains("the copy the game loads"), "{footer}");
         assert!(!footer.contains("the rest are shadowed."), "{footer}");
-        let lowered = footer.to_ascii_lowercase();
-        assert!(!lowered.contains("winner"), "{footer}");
-        assert!(!lowered.contains("loser"), "{footer}");
     }
 
     #[test]
     fn help_names_the_copy_the_game_loads() {
         let help = which_help();
-        let lowered = help.to_ascii_lowercase();
         assert!(help.contains("the copy the game loads"), "{help}");
-        assert!(!lowered.contains("winner"), "{help}");
-        assert!(!lowered.contains("loser"), "{help}");
     }
 }

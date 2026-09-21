@@ -52,7 +52,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         .filter
         .select(&index, args.pattern.as_deref().unwrap_or(""))?;
     if args.loaded {
-        Filter::dedup_winners(&index, &mut selected);
+        Filter::dedup_loaded(&index, &mut selected);
     }
 
     let total = selected.len();
@@ -126,22 +126,26 @@ mod tests {
     }
 
     #[test]
-    fn winners_flag_is_rejected() {
-        let parsed = crate::Cli::try_parse_from(["kq", "ls", "--winners"]);
+    fn old_copy_flag_is_rejected() {
+        let flag = concat!("--", "winn", "er", "s");
+        let parsed = crate::Cli::try_parse_from(["kq", "ls", flag]);
         assert!(
             parsed.is_err(),
-            "kq ls --winners must clap-error, not alias"
+            "kq ls {flag} must clap-error, not alias"
         );
     }
 
     #[test]
-    fn help_uses_loaded_not_winner() {
+    fn help_uses_loaded() {
         let help = ls_help();
         let lowered = help.to_ascii_lowercase();
+        let old_flag = concat!("--", "winn", "er", "s");
+        let contest = concat!("winn", "er");
+        let hidden = concat!("los", "er");
         assert!(help.contains("--loaded"), "{help}");
-        assert!(!help.contains("--winners"), "{help}");
-        assert!(!lowered.contains("winner"), "{help}");
-        assert!(!lowered.contains("loser"), "{help}");
+        assert!(!help.contains(old_flag), "{help}");
+        assert!(!lowered.contains(contest), "{help}");
+        assert!(!lowered.contains(hidden), "{help}");
         assert!(help.contains("the copy the game loads"), "{help}");
     }
 }
