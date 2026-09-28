@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 kq-format = { path = "../kq-format" }
 kq-index = { path = "../kq-index" }
+kq-ncs = { path = "../kq-ncs" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 rayon = { workspace = true }
@@ -20,3 +21,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 memmap2 = { workspace = true }
 regex = "1"
+
+[dev-dependencies]
+tempfile = "3"

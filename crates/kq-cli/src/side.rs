@@ -137,7 +137,7 @@ fn looks_like_json(bytes: &[u8]) -> bool {
     matches!(start, Some(b'{') | Some(b'['))
 }
 
-/// Winner vs the next same-type copy in the resolve chain.
+/// The loaded copy vs the next same-type copy in the resolve chain.
 pub fn load_shadow_pair(ctx: &Ctx, spec: &str, content_only: bool) -> Result<(Loaded, Loaded)> {
     let index = ctx.index()?;
     let (name, want) = parse_ref(spec, None)?;

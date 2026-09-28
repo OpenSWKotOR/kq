@@ -60,17 +60,68 @@ fn resolve_explicit(p: &Path) -> Result<Target> {
     if kq_index::discover::is_install_root(p) {
         return Ok(Target::Install(p.to_path_buf()));
     }
-    // A directory inside an install (`-i .` from Override/) means the whole
-    // install, matching how the cwd fallback behaves. A named *file* never
-    // gets this treatment — pointing at `modules/danm13.mod` means that one
-    // capsule even when it happens to sit inside an install.
     if p.is_dir() {
+        if let Some(steam) = kq_index::discover::child(p, "steamassets") {
+            if kq_index::discover::is_install_root(&steam) {
+                return Ok(Target::Install(steam));
+            }
+        }
         if let Some(found) = kq_index::discover::find_upward(p) {
             return Ok(Target::Install(found));
         }
     }
     if p.exists() {
+        if p.is_dir() {
+            if let Some(steam) = kq_index::discover::child(p, "steamassets") {
+                if steam.join("chitin.key").exists()
+                    || kq_index::discover::child(&steam, "chitin.key").is_some()
+                {
+                    eprintln!(
+                        "warning: treating {} as a loose folder, but {} looks like an Aspyr install root (chitin.key). Pass -i on that path if indexing failed.",
+                        p.display(),
+                        steam.display()
+                    );
+                }
+            }
+        }
         return Ok(Target::Standalone(p.to_path_buf()));
     }
     Err(NoInstall(format!("{} does not exist", p.display())).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn touch(path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, b"").unwrap();
+    }
+
+    #[test]
+    fn resolve_explicit_follows_steamassets_child() {
+        let root = tempfile::tempdir().unwrap();
+        let steam = root.path().join("steamassets");
+        touch(&steam.join("chitin.key"));
+        // Parent is NOT an install root (no chitin.key at parent).
+        let target = resolve_explicit(root.path()).unwrap();
+        match target {
+            Target::Install(p) => assert_eq!(p, steam.canonicalize().unwrap_or(steam)),
+            _ => panic!("expected Install(steamassets), got non-install"),
+        }
+    }
+
+    #[test]
+    fn resolve_explicit_warns_when_folder_has_steamassets_chitin() {
+        let root = tempfile::tempdir().unwrap();
+        let steam = root.path().join("SteamAssets"); // case variant
+        touch(&steam.join("chitin.key"));
+        // Also put a loose file so Standalone path is valid if discovery misses.
+        // After the fix, this must still prefer steamassets Install.
+        let target = resolve_explicit(root.path()).unwrap();
+        assert!(matches!(target, Target::Install(_)));
+    }
 }

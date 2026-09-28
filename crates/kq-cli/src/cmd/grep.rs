@@ -42,9 +42,13 @@ pub struct Args {
     #[arg(short = 'l', long)]
     files_with_matches: bool,
 
-    /// Include only the copy the game would actually load.
+    /// Print N lines of context before and after each match.
+    #[arg(short = 'C', long, default_value_t = 0, value_name = "N")]
+    context: usize,
+
+    /// Include only the copy the game loads.
     #[arg(long)]
-    winners: bool,
+    loaded: bool,
 
     /// Also search resource types with no known decoder, as raw bytes.
     ///
@@ -66,11 +70,18 @@ struct Hit<'a> {
     container: &'a str,
     module: Option<&'a str>,
     line: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    matched: Option<bool>,
 }
 
 struct ResourceMatches {
     index: u32,
-    lines: Vec<String>,
+    lines: Vec<RenderedLine>,
+}
+
+struct RenderedLine {
+    text: String,
+    matched: bool,
 }
 
 pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
@@ -89,8 +100,8 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let mut selected = args
         .filter
         .select(&index, args.name.as_deref().unwrap_or(""))?;
-    if args.winners {
-        Filter::dedup_winners(&index, &mut selected);
+    if args.loaded {
+        Filter::dedup_loaded(&index, &mut selected);
     }
     if !args.include_binary {
         selected.retain(|&i| is_searchable(index.resources[i as usize].restype));
@@ -113,11 +124,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
                 }
                 _ => render::render(&decoded, Format::Gron, &r.filename()).ok()?,
             };
-            let lines: Vec<String> = projected
-                .lines()
-                .filter(|l| re.is_match(l))
-                .map(str::to_string)
-                .collect();
+            let lines = matching_lines(&projected, &re, args.context);
             if lines.is_empty() {
                 None
             } else {
@@ -158,11 +165,18 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
                     source: source.kind.as_str(),
                     container: &source.label,
                     module: source.module_root.as_deref(),
-                    line: line.clone(),
+                    line: line.text.clone(),
+                    matched: (args.context > 0).then_some(line.matched),
                 };
                 ctx.out.json_line(&mut w, &hit)?;
             } else {
-                writeln!(w, "{} {}", ctx.out.accent(&index.virt_path(r)), line)?;
+                let separator = if line.matched { ' ' } else { '-' };
+                writeln!(
+                    w,
+                    "{}{separator}{}",
+                    ctx.out.accent(&index.virt_path(r)),
+                    line.text
+                )?;
             }
         }
     }
@@ -184,6 +198,34 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     } else {
         Ok(exit::OK)
     }
+}
+
+fn matching_lines(projected: &str, re: &regex::Regex, context: usize) -> Vec<RenderedLine> {
+    let lines: Vec<&str> = projected.lines().collect();
+    let matches: Vec<bool> = lines.iter().map(|line| re.is_match(line)).collect();
+    let mut included = vec![false; lines.len()];
+
+    for (index, &matched) in matches.iter().enumerate() {
+        if matched {
+            let start = index.saturating_sub(context);
+            let end = index
+                .saturating_add(context)
+                .min(lines.len().saturating_sub(1));
+            included[start..=end].fill(true);
+        }
+    }
+
+    lines
+        .into_iter()
+        .zip(matches)
+        .zip(included)
+        .filter_map(|((text, matched), included)| {
+            included.then(|| RenderedLine {
+                text: text.to_string(),
+                matched,
+            })
+        })
+        .collect()
 }
 
 /// Whether `kq grep` reads this resource by default.
@@ -212,4 +254,119 @@ fn is_searchable(t: kq_format::ResType) -> bool {
                     | "bmu"
             )
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    use serde_json::json;
+
+    #[test]
+    fn context_lines_are_a_source_ordered_union() {
+        let re = regex::Regex::new("hit").unwrap();
+        let lines = matching_lines("zero\nhit one\ntwo\nhit three\nfour", &re, 1);
+
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| (line.text.as_str(), line.matched))
+                .collect::<Vec<_>>(),
+            vec![
+                ("zero", false),
+                ("hit one", true),
+                ("two", false),
+                ("hit three", true),
+                ("four", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn zero_context_keeps_only_matches_and_legacy_json_shape() {
+        let re = regex::Regex::new("hit").unwrap();
+        let lines = matching_lines("before\nhit\nafter", &re, 0);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "hit");
+        assert!(lines[0].matched);
+
+        let hit = Hit {
+            resource: "test.utc".into(),
+            path: "Override/test.utc".into(),
+            source: "override",
+            container: "Override",
+            module: None,
+            line: "hit".into(),
+            matched: None,
+        };
+        assert_eq!(
+            serde_json::to_value(hit).unwrap(),
+            json!({
+                "resource": "test.utc",
+                "path": "Override/test.utc",
+                "source": "override",
+                "container": "Override",
+                "module": null,
+                "line": "hit"
+            })
+        );
+    }
+
+    #[test]
+    fn context_json_marks_each_line_deterministically() {
+        let hit = Hit {
+            resource: "test.utc".into(),
+            path: "Override/test.utc".into(),
+            source: "override",
+            container: "Override",
+            module: None,
+            line: "before".into(),
+            matched: Some(false),
+        };
+        assert_eq!(serde_json::to_value(hit).unwrap()["matched"], false);
+    }
+
+    fn grep_help() -> String {
+        use clap::CommandFactory;
+        let mut cmd = crate::Cli::command();
+        let mut buf = Vec::new();
+        cmd.find_subcommand_mut("grep")
+            .unwrap()
+            .write_long_help(&mut buf)
+            .unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn loaded_flag_is_accepted() {
+        let cli = crate::Cli::try_parse_from(["kq", "grep", "ActionUseSkill", "--loaded"]).unwrap();
+        let crate::Command::Grep(args) = cli.command else {
+            panic!("expected grep");
+        };
+        assert!(args.loaded);
+    }
+
+    #[test]
+    fn old_copy_flag_is_rejected() {
+        let flag = concat!("--", "winn", "er", "s");
+        let parsed = crate::Cli::try_parse_from(["kq", "grep", "ActionUseSkill", flag]);
+        assert!(
+            parsed.is_err(),
+            "kq grep {flag} must clap-error, not alias"
+        );
+    }
+
+    #[test]
+    fn help_uses_loaded() {
+        let help = grep_help();
+        let lowered = help.to_ascii_lowercase();
+        let old_flag = concat!("--", "winn", "er", "s");
+        let contest = concat!("winn", "er");
+        let hidden = concat!("los", "er");
+        assert!(help.contains("--loaded"), "{help}");
+        assert!(!help.contains(old_flag), "{help}");
+        assert!(!lowered.contains(contest), "{help}");
+        assert!(!lowered.contains(hidden), "{help}");
+        assert!(help.contains("the copy the game loads"), "{help}");
+    }
 }

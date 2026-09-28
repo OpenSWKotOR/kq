@@ -22,9 +22,10 @@
 //! win — but indexing and export still see them.
 //!
 //! Those rim copies are **not** valid V2.b tab-header tables. They store column
-//! names as **NUL-separated** strings (one name per column), often followed by
-//! an extra padding NUL before the row count. Feeding them to [`read`] fails with
-//! errors like “row-label table ends before all … labels were read”.
+//! names as **NUL-separated** strings (one name per column). Some add a padding
+//! NUL before the row count; active tables may put the row count directly after
+//! the last name. Feeding them to [`read`] fails with errors like “row-label
+//! table ends before all … labels were read”.
 //!
 //! [`read_salvage`] is a separate, heuristic parser for that non-standard layout.
 //! [`read_or_salvage`] tries [`read`] first and falls back to [`read_salvage`].
@@ -153,7 +154,11 @@ pub fn read_salvage(data: &[u8], path: &Path) -> Result<TwoDa> {
     let start = header_start(data, path)?;
     let mut warnings = vec![SALVAGE_BANNER.to_string()];
 
-    let columns = read_nul_separated_columns(data, start);
+    let inferred = infer_nul_separated_header(data, start);
+    let columns = inferred
+        .as_ref()
+        .map(|(columns, _)| columns.clone())
+        .unwrap_or_else(|| read_nul_separated_columns(data, start));
     if columns.len() < 2 {
         let r = Reader::new(data, path);
         return Err(r.malformed(format!(
@@ -162,8 +167,9 @@ pub fn read_salvage(data: &[u8], path: &Path) -> Result<TwoDa> {
         )));
     }
 
-    let mut pos = nul_separated_header_end(data, start);
-    pos = skip_padding_nuls(data, pos);
+    let mut pos = inferred
+        .map(|(_, row_count_pos)| row_count_pos)
+        .unwrap_or_else(|| skip_padding_nuls(data, nul_separated_header_end(data, start)));
     if pos + 4 > data.len() {
         let r = Reader::new(data, path);
         return Err(r.malformed("salvage: missing row count"));
@@ -289,6 +295,89 @@ fn read_nul_separated_columns(data: &[u8], start: usize) -> Vec<String> {
     cols
 }
 
+/// Find where an uncounted sequence of NUL-terminated column labels ends.
+///
+/// Some live V2.b tables put the row count directly after the final label;
+/// shadow copies in the retail RIMs may insert one padding NUL. Trying each
+/// label boundary and accepting the one whose remaining table is structurally
+/// complete handles both without mistaking the row-count bytes for a label.
+fn infer_nul_separated_header(data: &[u8], start: usize) -> Option<(Vec<String>, usize)> {
+    let mut columns = Vec::new();
+    let mut pos = start;
+
+    while columns.len() < 512 {
+        let end = pos.checked_add(data.get(pos..)?.iter().position(|&b| b == 0)?)?;
+        let raw = data.get(pos..end)?;
+        if raw.is_empty() || raw.iter().any(|&b| b < b' ' || b == 0x7f) {
+            break;
+        }
+        columns.push(String::from_utf8_lossy(raw).into_owned());
+        pos = end + 1;
+
+        for row_count_pos in [Some(pos), (data.get(pos) == Some(&0)).then_some(pos + 1)]
+            .into_iter()
+            .flatten()
+        {
+            if complete_layout_at(data, row_count_pos, columns.len()) {
+                return Some((columns, row_count_pos));
+            }
+        }
+    }
+    None
+}
+
+fn complete_layout_at(data: &[u8], row_count_pos: usize, column_count: usize) -> bool {
+    let Some(row_count_end) = row_count_pos.checked_add(4) else {
+        return false;
+    };
+    if row_count_end > data.len() {
+        return false;
+    }
+    let row_count = u32_le(data, row_count_pos) as usize;
+    if !plausible_dimensions(data.len(), row_count_end, row_count, column_count) {
+        return false;
+    }
+
+    let mut pos = row_count_end;
+    for _ in 0..row_count {
+        let Some(tab) = data
+            .get(pos..)
+            .and_then(|tail| tail.iter().position(|&b| b == b'\t'))
+        else {
+            return false;
+        };
+        pos += tab + 1;
+    }
+
+    let Some(offset_bytes) = row_count
+        .checked_mul(column_count)
+        .and_then(|cells| cells.checked_mul(2))
+    else {
+        return false;
+    };
+    let Some(size_pos) = pos.checked_add(offset_bytes) else {
+        return false;
+    };
+    let Some(data_start) = size_pos.checked_add(2) else {
+        return false;
+    };
+    if data_start > data.len() {
+        return false;
+    }
+    let data_size = u16::from_le_bytes([data[size_pos], data[size_pos + 1]]) as usize;
+    let Some(data_end) = data_start.checked_add(data_size) else {
+        return false;
+    };
+    if data_end > data.len() {
+        return false;
+    }
+
+    data[pos..size_pos].chunks_exact(2).all(|raw| {
+        let offset = u16::from_le_bytes([raw[0], raw[1]]) as usize;
+        offset < data_size && data[data_start + offset..data_end].contains(&0)
+    })
+}
+
 fn nul_separated_header_end(data: &[u8], start: usize) -> usize {
     let mut p = start;
     while p < data.len() && data[p] != 0 {
@@ -396,14 +485,20 @@ mod tests {
         out
     }
 
-    /// Mimics the non-standard NUL-separated header block in `rims/global.rim`.
-    fn build_rims_style_2da(columns: &[&str], labels: &[&str], cells: &[&[&str]]) -> Vec<u8> {
+    fn build_nul_header_2da(
+        columns: &[&str],
+        labels: &[&str],
+        cells: &[&[&str]],
+        padding_nul: bool,
+    ) -> Vec<u8> {
         let mut out = b"2DA V2.b\n".to_vec();
         for c in columns {
             out.extend_from_slice(c.as_bytes());
             out.push(0);
         }
-        out.push(0); // padding NUL before row count
+        if padding_nul {
+            out.push(0);
+        }
         out.extend_from_slice(&(labels.len() as u32).to_le_bytes());
         for l in labels {
             out.extend_from_slice(l.as_bytes());
@@ -456,20 +551,22 @@ mod tests {
 
     #[test]
     fn strict_read_rejects_rims_style_headers() {
-        let data = build_rims_style_2da(
+        let data = build_nul_header_2da(
             &["label", "value"],
             &["0", "1"],
             &[&["a", "1"], &["b", "2"]],
+            true,
         );
         assert!(read(&data, Path::new("rims/global.rim/appearance.2da")).is_err());
     }
 
     #[test]
     fn salvage_reads_rims_style_headers_with_warning() {
-        let data = build_rims_style_2da(
+        let data = build_nul_header_2da(
             &["label", "value"],
             &["0", "1"],
             &[&["a", "1"], &["b", "2"]],
+            true,
         );
         let t = read_salvage(&data, Path::new("rims/global.rim/appearance.2da")).unwrap();
         assert_eq!(t.columns, vec!["label", "value"]);
@@ -487,8 +584,24 @@ mod tests {
 
     #[test]
     fn read_or_salvage_falls_back_for_rims_style() {
-        let data = build_rims_style_2da(&["label", "value"], &["0"], &[&["a", "1"]]);
+        let data = build_nul_header_2da(&["label", "value"], &["0"], &[&["a", "1"]], true);
         let t = read_or_salvage(&data, Path::new("rims/miniglobal.rim/baseitems.2da")).unwrap();
+        assert_eq!(t.warnings[0], SALVAGE_BANNER);
+    }
+
+    #[test]
+    fn salvage_reads_unpadded_nul_separated_headers() {
+        let data = build_nul_header_2da(
+            &["name", "script"],
+            &["0", "1"],
+            &[&["locker", "k_open"], &["door", "k_enter"]],
+            false,
+        );
+
+        let t = read_or_salvage(&data, Path::new("active.2da")).unwrap();
+        assert_eq!(t.columns, vec!["name", "script"]);
+        assert_eq!(t.labels, vec!["0", "1"]);
+        assert_eq!(t.rows[1], vec!["door", "k_enter"]);
         assert_eq!(t.warnings[0], SALVAGE_BANNER);
     }
 }

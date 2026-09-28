@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+* `kq graph` is the live inventory (used / unused / overshadowed). `kq unused`, `kq leftovers`, and `kq export` are gone. `--format` is `lists` | `tree` | `summary`.
+* `kq graph` leftover list is one unused ResRef per type: packing copies of a reached script are not unused. NCS mentions come from decompiled NSS (and includes), not opcode names.
+* `kq cat` of `.ncs` prints decompiled NSS unless `--disasm` / JSON.
+* `kq ls --loaded` and `kq grep --loaded` keep only the copy the game loads. `kq which` marks that copy with `*` and the rest `(overshadowed)`.
+
+### Bug Fixes
+
+* accept `--json` and `--text` before or after every subcommand
+* accept `find` as an idiomatic alias for resource discovery with `ls`
+* decode padded and unpadded NUL-separated V2.b column headers
+* accept `cat --module ROOT` and resolve the module's highest-precedence copy
+* accept `cat --module ROOT --tag TAG --type EXT` for typed placed GIT objects
+* accept standalone resource/archive paths in `cat --from` without installation discovery
+
 ## [0.5.0](https://github.com/holowan-biolabs/kq/compare/v0.4.0...v0.5.0) (2026-08-31)
 
 
@@ -27,7 +45,7 @@ JSON is the default output format (`--text` for human-readable views). No
 truncation in graph/leftover reports: full reachability tree, complete
 `catalog` with `status`/`mentions`/`parent_path` on every resource, all
 talk-table rows, and all resource types included unless `--no-assets`.
-Shadowed copies are included unless `--winners-only`. `kq cat` defaults to
+Overshadowed copies are included unless you ask only for the copy the game loads. `kq cat` defaults to
 nested JSON with a resource envelope and full GFF content.
 
 ## 0.3.3

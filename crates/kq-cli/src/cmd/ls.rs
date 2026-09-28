@@ -17,9 +17,9 @@ pub struct Args {
     #[command(flatten)]
     filter: Filter,
 
-    /// Show only the copy the game would actually load.
+    /// Only the copy the game loads.
     #[arg(long)]
-    winners: bool,
+    loaded: bool,
 
     /// Stop after this many results. 0 means no limit.
     #[arg(short = 'n', long, default_value_t = 0, value_name = "N")]
@@ -51,8 +51,8 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let mut selected = args
         .filter
         .select(&index, args.pattern.as_deref().unwrap_or(""))?;
-    if args.winners {
-        Filter::dedup_winners(&index, &mut selected);
+    if args.loaded {
+        Filter::dedup_loaded(&index, &mut selected);
     }
 
     let total = selected.len();
@@ -100,4 +100,52 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     w.flush()?;
 
     Ok(if total == 0 { exit::NO_MATCH } else { exit::OK })
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::{CommandFactory, Parser};
+
+    fn ls_help() -> String {
+        let mut cmd = crate::Cli::command();
+        let mut buf = Vec::new();
+        cmd.find_subcommand_mut("ls")
+            .unwrap()
+            .write_long_help(&mut buf)
+            .unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn loaded_flag_is_accepted() {
+        let cli = crate::Cli::try_parse_from(["kq", "ls", "--loaded"]).unwrap();
+        let crate::Command::Ls(args) = cli.command else {
+            panic!("expected ls");
+        };
+        assert!(args.loaded);
+    }
+
+    #[test]
+    fn old_copy_flag_is_rejected() {
+        let flag = concat!("--", "winn", "er", "s");
+        let parsed = crate::Cli::try_parse_from(["kq", "ls", flag]);
+        assert!(
+            parsed.is_err(),
+            "kq ls {flag} must clap-error, not alias"
+        );
+    }
+
+    #[test]
+    fn help_uses_loaded() {
+        let help = ls_help();
+        let lowered = help.to_ascii_lowercase();
+        let old_flag = concat!("--", "winn", "er", "s");
+        let contest = concat!("winn", "er");
+        let hidden = concat!("los", "er");
+        assert!(help.contains("--loaded"), "{help}");
+        assert!(!help.contains(old_flag), "{help}");
+        assert!(!lowered.contains(contest), "{help}");
+        assert!(!lowered.contains(hidden), "{help}");
+        assert!(help.contains("the copy the game loads"), "{help}");
+    }
 }

@@ -68,6 +68,133 @@ pub fn sniff(data: &[u8]) -> bool {
     t0 == K1_LAYOUT0 || t0 == K2_LAYOUT0
 }
 
+/// Bitmap / lightmap strings sit this many bytes into a trimesh header.
+const TRIMESH_BITMAP_OFF: usize = 88;
+
+/// Collect supermodel + trimesh bitmap/lightmap names without MDX or verts.
+pub(crate) fn texture_refs(mdl: &[u8]) -> Vec<String> {
+    match collect_texture_refs(mdl) {
+        Ok(mut out) => {
+            out.sort();
+            out.dedup();
+            out
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+fn push_ref(out: &mut Vec<String>, name: &str) {
+    if !name.is_empty() && !name.eq_ignore_ascii_case("null") {
+        out.push(name.to_ascii_lowercase());
+    }
+}
+
+fn collect_texture_refs(mdl: &[u8]) -> Result<Vec<String>> {
+    if mdl.len() < PREAMBLE + NODE_HEADER {
+        return Ok(Vec::new());
+    }
+    let geom = &mdl[PREAMBLE..];
+    let path = Path::new("<mdl-texture-refs>");
+    let mut r = Reader::new(geom, path);
+    let _layout0 = r.u32()?;
+    let _layout1 = r.u32()?;
+    let _name = r.fixed_string_cased(32)?;
+    let root_off = r.u32()? as usize;
+    let _node_count = r.u32()?;
+    r.take(28)?;
+    let _geom_type = r.u8()?;
+    r.take(3)?;
+    r.take(4)?; // classification / subclass / pad / fog
+    let _child_models = r.u32()?;
+    let _anims_off = r.u32()?;
+    let _anim_count = r.u32()?;
+    let _anim_count2 = r.u32()?;
+    let _parent_ptr = r.u32()?;
+    r.take(12)?; // bmin
+    r.take(12)?; // bmax
+    let _radius = r.f32()?;
+    let _anim_scale = r.f32()?;
+    let supermodel = r.fixed_string_cased(32)?;
+
+    let mut out = Vec::new();
+    push_ref(&mut out, &supermodel);
+
+    let mut visited = HashSet::new();
+    walk_node_refs(geom, path, root_off, &mut visited, &mut out);
+    Ok(out)
+}
+
+fn walk_node_refs(
+    geom: &[u8],
+    path: &Path,
+    off: usize,
+    visited: &mut HashSet<usize>,
+    out: &mut Vec<String>,
+) {
+    if !visited.insert(off) {
+        return;
+    }
+    if !ptr_ok(off, geom.len(), NODE_HEADER) {
+        return;
+    }
+    let mut r = Reader::new(geom, path);
+    if r.seek(off).is_err() {
+        return;
+    }
+    let Ok(flags) = r.u16() else {
+        return;
+    };
+    if r.take(42).is_err() {
+        // pad, node_id, name_id, root, parent, position, orientation
+        return;
+    }
+    let Ok(children_off) = r.u32() else {
+        return;
+    };
+    let children_off = children_off as usize;
+    let Ok(child_count) = r.u32() else {
+        return;
+    };
+    let child_count = sane(child_count, MAX_CHILDREN);
+
+    if flags & FLAG_MESH != 0 {
+        let names_off = off
+            .saturating_add(NODE_HEADER)
+            .saturating_add(TRIMESH_BITMAP_OFF);
+        if names_off.saturating_add(64) <= geom.len() {
+            if r.seek(names_off).is_ok() {
+                if let Ok(bitmap) = r.fixed_string_cased(32) {
+                    push_ref(out, &bitmap);
+                }
+                if let Ok(lightmap) = r.fixed_string_cased(32) {
+                    push_ref(out, &lightmap);
+                }
+            }
+        }
+    }
+
+    if child_count > 0 && ptr_ok(children_off, geom.len(), child_count * 4) {
+        if r.seek(children_off).is_ok() {
+            let mut child_offs = Vec::with_capacity(child_count);
+            let mut ok = true;
+            for _ in 0..child_count {
+                match r.u32() {
+                    Ok(c) => child_offs.push(c as usize),
+                    Err(_) => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok {
+                for child_off in child_offs {
+                    walk_node_refs(geom, path, child_off, visited, out);
+                }
+            }
+        }
+    }
+}
+
 pub fn read(mdl: &[u8], mdx: Option<&[u8]>, path: &Path) -> Result<Model> {
     if mdl.len() < PREAMBLE + NODE_HEADER {
         return Err(FormatError::Truncated {

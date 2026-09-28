@@ -12,5 +12,6 @@ thiserror = { workspace = true }
 serde_json = { workspace = true }
 base64 = "0.22"
 kotor-ncs-isa = { workspace = true }
+kotor-ncs = { workspace = true }
 kotor-formats = { workspace = true }
 kotor-diff = { workspace = true }

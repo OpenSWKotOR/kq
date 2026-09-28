@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/kq-format", "crates/kq-index", "crates/kq-cli"]
+members = ["crates/kq-format", "crates/kq-index", "crates/kq-cli", "crates/kq-ncs"]
 
 [workspace.package]
 version = "0.1.0"
@@ -18,14 +18,8 @@ memmap2 = "0.9"
 rayon = "1"
 clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 
-# One tag for all three: cargo resolves a git source once, so every dependency
-# taken from a repository has to name the same ref.
-kotor-ncs-isa = { git = "https://github.com/holowan-biolabs/kotor-formats", tag = "v0.1.0" }
-kotor-formats = { git = "https://github.com/holowan-biolabs/kotor-formats", tag = "v0.1.0" }
-kotor-diff = { git = "https://github.com/holowan-biolabs/kotor-formats", tag = "v0.1.0", features = ["json"] }
-
-# To work against a local kotor-formats checkout instead, uncomment:
-# [patch."https://github.com/holowan-biolabs/kotor-formats"]
-# kotor-ncs-isa = { path = "../kotor-formats/crates/kotor-ncs-isa" }
-# kotor-formats = { path = "../kotor-formats/crates/kotor-formats" }
-# kotor-diff = { path = "../kotor-formats/crates/kotor-diff" }
+# One git ref for every crate from kotor-formats (Cargo resolves a git source once).
+kotor-ncs-isa = { git = "https://github.com/holowan-biolabs/kotor-formats", rev = "8e537f845fe88d8a66d0ff3302dc072c10a2c4e7" }
+kotor-ncs = { git = "https://github.com/holowan-biolabs/kotor-formats", rev = "8e537f845fe88d8a66d0ff3302dc072c10a2c4e7" }
+kotor-formats = { git = "https://github.com/holowan-biolabs/kotor-formats", rev = "8e537f845fe88d8a66d0ff3302dc072c10a2c4e7" }
+kotor-diff = { git = "https://github.com/holowan-biolabs/kotor-formats", rev = "8e537f845fe88d8a66d0ff3302dc072c10a2c4e7", features = ["json"] }

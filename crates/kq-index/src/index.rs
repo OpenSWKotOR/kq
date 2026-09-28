@@ -83,9 +83,9 @@ impl Index {
 
     /// Every resource with this ResRef, best match first.
     ///
-    /// Returning the whole chain rather than only the winner is deliberate:
-    /// "which copy of this actually loads, and what is it shadowing" is the
-    /// question people get wrong about KotOR.
+    /// Returning the whole chain rather than only the copy the game loads is
+    /// deliberate: "which copy of this actually loads, and what is it
+    /// shadowing" is the question people get wrong about KotOR.
     pub fn lookup(&self, resref: &str) -> &[u32] {
         self.lookup
             .get(&resref.to_ascii_lowercase())
@@ -141,9 +141,9 @@ impl Index {
     /// Where a human should look: install-relative, with archives as folders.
     ///
     /// `modules/end_m01aa.mod/m01aa.git`, `data/templates.bif/c_drdg.utc`,
-    /// `Override/g_assassindrd01.utc`. A `.mod` and the `*_s.rim` / `*_dlg.erf`
-    /// trio share a [`Source::module_root`]; the `.mod` still wins on name
-    /// collisions because its precedence is lower.
+    /// `Override/g_assassindrd01.utc`. Module pieces share a
+    /// [`Source::module_root`]; `NAME.rim` (CURRENTGAME) beats `.mod`, and
+    /// `.mod` beats `_s.rim` / `_dlg.erf`.
     pub fn virt_path(&self, r: &Resource) -> String {
         virtual_path(&self.root, self.file(r), &r.filename())
     }
@@ -184,20 +184,54 @@ impl std::ops::Deref for MappedFile {
 
 /// Strip module piece suffixes to get the logical module root.
 ///
-/// `danm13.rim` + `danm13_s.rim` + `danm13_dlg.erf` are one composite
-/// module. `danm13.mod` is the same root and outranks all three.
+/// `danm13.rim` + `danm13_s.rim` + `danm13_dlg.erf` + `danm13.mod` share a
+/// root. Also `lips/NAME_loc.mod` → `NAME` (`CSWSModule::AddModuleResources`
+/// registers `LIPS:NAME_loc` with the current module).
 pub fn module_root(filename: &str) -> String {
     let stem = filename
         .rsplit_once('.')
         .map(|(s, _)| s)
         .unwrap_or(filename)
         .to_ascii_lowercase();
-    for suffix in ["_dlg", "_adx", "_s", "_a"] {
+    for suffix in ["_dlg", "_adx", "_s", "_a", "_loc"] {
         if let Some(base) = stem.strip_suffix(suffix) {
             return base.to_string();
         }
     }
     stem
+}
+
+fn lips_module_root(filename: &str) -> Option<String> {
+    let stem = filename
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(filename)
+        .to_ascii_lowercase();
+    if stem == "localization" {
+        return None;
+    }
+    stem.strip_suffix("_loc").map(str::to_string)
+}
+
+/// True for `modules/NAME.rim` — the IFO/ARE/GIT capsule copied to
+/// `CURRENTGAME:` — as opposed to `NAME_s.rim` / `NAME_a.rim` / `NAME_adx.rim`.
+fn is_currentgame_rim(filename: &str) -> bool {
+    let lower = filename.to_ascii_lowercase();
+    let Some(stem) = lower.strip_suffix(".rim") else {
+        return false;
+    };
+    !(stem.ends_with("_s") || stem.ends_with("_a") || stem.ends_with("_adx"))
+}
+
+/// Resman order for a module capsule (lower wins).
+///
+/// Override (0) → `CURRENTGAME:NAME.rim` (50) → `NAME.mod` (100) →
+/// `NAME_s.rim` / `NAME_dlg.erf` (200) → …
+fn capsule_precedence(kind: SourceKind, filename: &str) -> u32 {
+    match kind {
+        SourceKind::ModuleRim if is_currentgame_rim(filename) => 50,
+        other => other.base_precedence() + texture_pack_rank(filename),
+    }
 }
 
 /// Collected output of one archive, before it is folded into the index.
@@ -600,19 +634,23 @@ fn parse_capsule(kind: SourceKind, path: &Path) -> Parsed {
         .map(str::to_ascii_lowercase)
         .unwrap_or_default();
 
-    // Inside modules/, a `.mod` outranks the `.rim` trio for the same root.
+    // Inside modules/, non-`.mod` capsules are ModuleRim; CURRENTGAME
+    // `NAME.rim` still outranks `.mod` (see `capsule_precedence`).
     let kind = if kind == SourceKind::ModuleMod && ext != "mod" {
         SourceKind::ModuleRim
     } else {
         kind
     };
-    let module_root =
-        matches!(kind, SourceKind::ModuleMod | SourceKind::ModuleRim).then(|| module_root(&name));
+    let module_root = match kind {
+        SourceKind::ModuleMod | SourceKind::ModuleRim => Some(module_root(&name)),
+        SourceKind::Lips => lips_module_root(&name),
+        _ => None,
+    };
 
     let source = Source {
         kind,
         label: name.clone(),
-        precedence: kind.base_precedence() + texture_pack_rank(&name),
+        precedence: capsule_precedence(kind, &name),
         module_root,
     };
 
@@ -767,6 +805,30 @@ mod tests {
         assert_eq!(module_root("end_m01aa_s.rim"), "end_m01aa");
         assert_eq!(module_root("end_m01aa_dlg.erf"), "end_m01aa");
         assert_eq!(module_root("danm13_s.RIM"), "danm13");
+        assert_eq!(module_root("ebo_m12aa_loc.mod"), "ebo_m12aa");
+        assert_eq!(lips_module_root("localization.mod"), None);
+    }
+
+    #[test]
+    fn currentgame_rim_beats_mod_and_mod_beats_s_rim() {
+        // Resman: CURRENTGAME:NAME.rim (IFO/ARE/GIT) before MODULES:NAME.mod;
+        // NAME.mod before NAME_s.rim / NAME_dlg.erf when both exist.
+        assert!(
+            capsule_precedence(SourceKind::ModuleRim, "end_m01aa.rim")
+                < capsule_precedence(SourceKind::ModuleMod, "end_m01aa.mod")
+        );
+        assert!(
+            capsule_precedence(SourceKind::ModuleMod, "end_m01aa.mod")
+                < capsule_precedence(SourceKind::ModuleRim, "end_m01aa_s.rim")
+        );
+        assert!(
+            capsule_precedence(SourceKind::ModuleMod, "end_m01aa.mod")
+                < capsule_precedence(SourceKind::ModuleRim, "end_m01aa_dlg.erf")
+        );
+        assert_eq!(
+            capsule_precedence(SourceKind::ModuleRim, "end_m01aa_s.rim"),
+            SourceKind::ModuleRim.base_precedence()
+        );
     }
 
     #[test]

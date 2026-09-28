@@ -227,6 +227,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastrand"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+
+[[package]]
 name = "getrandom"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -286,7 +292,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "kotor-diff"
 version = "0.1.0"
-source = "git+https://github.com/holowan-biolabs/kotor-formats?tag=v0.1.0#d4ed9a8cbeb9281b33319248d12c4b97b8eebd87"
+source = "git+https://github.com/holowan-biolabs/kotor-formats?rev=8e537f845fe88d8a66d0ff3302dc072c10a2c4e7#8e537f845fe88d8a66d0ff3302dc072c10a2c4e7"
 dependencies = [
  "kotor-formats",
  "serde",
@@ -296,12 +302,20 @@ dependencies = [
 [[package]]
 name = "kotor-formats"
 version = "0.1.0"
-source = "git+https://github.com/holowan-biolabs/kotor-formats?tag=v0.1.0#d4ed9a8cbeb9281b33319248d12c4b97b8eebd87"
+source = "git+https://github.com/holowan-biolabs/kotor-formats?rev=8e537f845fe88d8a66d0ff3302dc072c10a2c4e7#8e537f845fe88d8a66d0ff3302dc072c10a2c4e7"
+
+[[package]]
+name = "kotor-ncs"
+version = "0.1.0"
+source = "git+https://github.com/holowan-biolabs/kotor-formats?rev=8e537f845fe88d8a66d0ff3302dc072c10a2c4e7#8e537f845fe88d8a66d0ff3302dc072c10a2c4e7"
+dependencies = [
+ "kotor-ncs-isa",
+]
 
 [[package]]
 name = "kotor-ncs-isa"
 version = "0.1.0"
-source = "git+https://github.com/holowan-biolabs/kotor-formats?tag=v0.1.0#d4ed9a8cbeb9281b33319248d12c4b97b8eebd87"
+source = "git+https://github.com/holowan-biolabs/kotor-formats?rev=8e537f845fe88d8a66d0ff3302dc072c10a2c4e7#8e537f845fe88d8a66d0ff3302dc072c10a2c4e7"
 
 [[package]]
 name = "kq-cli"
@@ -311,11 +325,13 @@ dependencies = [
  "clap",
  "kq-format",
  "kq-index",
+ "kq-ncs",
  "memmap2",
  "rayon",
  "regex",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -325,6 +341,7 @@ dependencies = [
  "base64",
  "kotor-diff",
  "kotor-formats",
+ "kotor-ncs",
  "kotor-ncs-isa",
  "serde",
  "serde_json",
@@ -343,6 +360,16 @@ dependencies = [
  "rmp-serde",
  "serde",
  "twox-hash",
+]
+
+[[package]]
+name = "kq-ncs"
+version = "0.1.0"
+dependencies = [
+ "kotor-ncs",
+ "kotor-ncs-isa",
+ "kq-format",
+ "kq-index",
 ]
 
 [[package]]
@@ -389,6 +416,12 @@ checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
 ]
+
+[[package]]
+name = "once_cell"
+version = "1.21.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "once_cell_polyfill"
@@ -594,6 +627,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "tempfile"
+version = "3.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+dependencies = [
+ "fastrand",
+ "getrandom 0.4.3",
+ "once_cell",
+ "rustix",
+ "windows-sys",
 ]
 
 [[package]]

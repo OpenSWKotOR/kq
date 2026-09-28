@@ -28,7 +28,7 @@ pub struct Args {
     #[arg(long = "against", value_name = "NAME")]
     against: Option<String>,
 
-    /// Compare the winner to the next shadowed copy. `RIGHT` is omitted.
+    /// Compare the copy the game loads to the next overshadowed copy. `RIGHT` is omitted.
     #[arg(long)]
     shadow: bool,
 
