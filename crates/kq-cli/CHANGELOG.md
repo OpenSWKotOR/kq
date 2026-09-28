@@ -18,6 +18,41 @@
 * accept `cat --module ROOT --tag TAG --type EXT` for typed placed GIT objects
 * accept standalone resource/archive paths in `cat --from` without installation discovery
 
+## [0.3.0](https://github.com/holowan-biolabs/kq/compare/v0.2.0...v0.3.0) (2026-09-28)
+
+
+### Features
+
+* **cli:** default NCS projection to DeNCS NSS with --disasm ([0835a7f](https://github.com/holowan-biolabs/kq/commit/0835a7f76d50f8e5be4139967c15a847cfb283ad))
+* **cli:** ls --loaded and which overshadowed labels ([004dde1](https://github.com/holowan-biolabs/kq/commit/004dde11a0201231b8a445a735c801f651d3d69a))
+* **graph:** record missing ResRefs and accept kq graph NAME ([8071d23](https://github.com/holowan-biolabs/kq/commit/8071d235547ae57f9faf9ac8dc1796372cf83865))
+* **graph:** used unused overshadowed inventory; drop unused leftovers export ([b839871](https://github.com/holowan-biolabs/kq/commit/b839871a3f376adbd8190a8dcfd40cadc8ce11d2))
+* **live:** add module Scope and scoped_winners ([dd3e867](https://github.com/holowan-biolabs/kq/commit/dd3e867f2ca6fd26200728825d14659f6e09b1a6))
+* read formats through the shared kotor-formats crate, and generate changes.ini ([#1](https://github.com/holowan-biolabs/kq/issues/1)) ([b8adecb](https://github.com/holowan-biolabs/kq/commit/b8adecb9aa41842c6842f5fd2d2ea0f45c086969))
+
+
+### Bug Fixes
+
+* **cli:** default unused to scoped winners; add --shadowed ([6e4a7a9](https://github.com/holowan-biolabs/kq/commit/6e4a7a99f86f17f6163959478e1ad2d28d9483a7))
+* **cli:** exclude override-shadowed copies from default candidates ([3d98df0](https://github.com/holowan-biolabs/kq/commit/3d98df06617e6d155b198d0bde554d9049aff3a9))
+* **cli:** resolve Aspyr K2 installs via steamassets/ ([de41564](https://github.com/holowan-biolabs/kq/commit/de41564933526d7a1db7faf9f2c081728df68da5))
+* **graph:** default inventory text unless --json ([8369beb](https://github.com/holowan-biolabs/kq/commit/8369beb803d76c57ef8407596447e1482e53bba8))
+* **graph:** use inventory helpers in production builds ([3812c12](https://github.com/holowan-biolabs/kq/commit/3812c12875a31f42f3936823b1f5f196f26cae85))
+* **live:** build module_entries from scoped winners ([701ccf6](https://github.com/holowan-biolabs/kq/commit/701ccf6d5fd48d9b0691187daa3b3d43b1c829b4))
+* **live:** classify mentions against the referrer's scope ([279eefd](https://github.com/holowan-biolabs/kq/commit/279eefd98070680a46e181d3c17a95ac0e56572c))
+* **live:** resolve BFS mentions in module scope ([24a24c6](https://github.com/holowan-biolabs/kq/commit/24a24c6c050ed1dd05f0aa6ef5c3f6bbf0d9f087))
+* **live:** seed hen dialogue/retreat and CONSTS-only NCS mentions ([4b12a18](https://github.com/holowan-biolabs/kq/commit/4b12a18aa3115ed9e02163947ba2a7f23170b7a6))
+* **live:** stop key/nss/numeric false-positive mentions ([26e3eb0](https://github.com/holowan-biolabs/kq/commit/26e3eb01fe7a0c593ab35aaaba39e3a90af15365))
+* **live:** synthetic ARE→lyt/vis/pth edges ([0c4f601](https://github.com/holowan-biolabs/kq/commit/0c4f6018e6890a16c981e0f1dd1c2f6bb654cf3a))
+* make release-please able to run at all ([81e1756](https://github.com/holowan-biolabs/kq/commit/81e1756c8ed5876ed7fa49c14765f495de75189b))
+* make release-please able to run at all ([#2](https://github.com/holowan-biolabs/kq/issues/2)) ([16d0f78](https://github.com/holowan-biolabs/kq/commit/16d0f78d9867e33b3dc8dc00ab03b403f0ccd48a))
+
+
+### Performance Improvements
+
+* **live:** extract MDL texture names without MDX/JSON ([222c67e](https://github.com/holowan-biolabs/kq/commit/222c67ef40b5343ae87ed3ab5b7c457361f9f9b6))
+* **live:** scan archives sequentially via mmap by file ([224aa98](https://github.com/holowan-biolabs/kq/commit/224aa989a42d55c1e4505d957ba3d1455b113562))
+
 ## [0.2.0](https://github.com/holowan-biolabs/kq/compare/v0.1.0...v0.2.0) (2026-09-28)
 
 
