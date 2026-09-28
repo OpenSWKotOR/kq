@@ -20,7 +20,8 @@ enum What {
     #[default]
     Both,
     Used,
-    Leftovers,
+    #[value(alias = "unused")]
+    Unused,
 }
 
 #[derive(clap::Args)]
@@ -97,7 +98,8 @@ struct Report<'a> {
     seed_ids: &'a [u32],
     resources_in_scope: usize,
     used: Section<'a>,
-    leftovers: Section<'a>,
+    overshadowed: Section<'a>,
+    unused: Section<'a>,
     catalog: Vec<unused::Row<'a>>,
 }
 
@@ -105,15 +107,23 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let index = ctx.index()?;
     let graph = live::build(&index)?;
 
-    let in_scope = unused::candidate_ids(&index, &args.filter, args.no_assets, args.winners_only)?;
-    let winners = unused::winner_set(&index, &in_scope);
-    let leftover_ids = unused::leftover_ids(
-        &index,
-        &graph,
-        &args.filter,
-        args.no_assets,
-        args.winners_only,
-    )?;
+    // Classification is deliberately done over the complete install catalog.
+    // A non-winning copy is shadowed, not unused: the engine can still resolve
+    // the winning copy for the same (resref, resource type).
+    let all_ids = unused::candidate_ids(&index, &args.filter, args.no_assets, false)?;
+    let in_scope = all_ids.clone();
+    let winner_ids = unused::winner_set(&index, &all_ids);
+    let shadowed_ids: Vec<u32> = all_ids
+        .iter()
+        .copied()
+        .filter(|id| !winner_ids.contains(id))
+        .collect();
+    let unused_ids: Vec<u32> = all_ids
+        .iter()
+        .copied()
+        .filter(|id| winner_ids.contains(id) && !graph.used_ids.contains(id))
+        .collect();
+    let winners = winner_ids.clone();
 
     let mut used_ids: Vec<u32> = graph
         .used_ids
@@ -123,19 +133,20 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
         .collect();
     used_ids.sort_unstable();
 
-    let leftover_set: HashSet<u32> = leftover_ids.iter().copied().collect();
+    let shadowed_set: HashSet<u32> = shadowed_ids.iter().copied().collect();
+    let unused_set: HashSet<u32> = unused_ids.iter().copied().collect();
 
     let used_strings = used_tlk_records(&graph);
     let leftover_strings = leftover_tlk_records(&graph);
 
     let show_used = matches!(args.what, What::Both | What::Used);
-    let show_leftovers = matches!(args.what, What::Both | What::Leftovers);
+    let show_leftovers = matches!(args.what, What::Both | What::Unused);
 
     if args.quiet && !ctx.out.json {
         return write_quiet(
             &index,
             &used_ids,
-            &leftover_ids,
+            &unused_ids,
             &leftover_strings,
             &args,
             show_used,
@@ -148,7 +159,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
             ctx,
             &graph,
             used_ids.len(),
-            leftover_ids.len(),
+            unused_ids.len(),
             leftover_strings.len(),
         );
     }
@@ -156,8 +167,10 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
     let mut catalog: Vec<unused::Row<'_>> = in_scope
         .iter()
         .map(|&id| {
-            let status = if leftover_set.contains(&id) {
-                "leftover"
+            let status = if shadowed_set.contains(&id) {
+                "overshadowed"
+            } else if unused_set.contains(&id) {
+                "unused"
             } else {
                 "used"
             };
@@ -168,15 +181,11 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
 
     let tree = build_json_forest(&index, &graph, 0);
     let used_by_module = group_by_module(&index, &used_ids);
-    let leftover_by_module = group_by_module(&index, &leftover_ids);
+    let unused_by_module = group_by_module(&index, &unused_ids);
 
     let used_resources: Vec<_> = used_ids
         .iter()
         .map(|&id| unused::resource_row(&index, id, &graph, &winners, "used"))
-        .collect();
-    let leftover_resources: Vec<_> = leftover_ids
-        .iter()
-        .map(|&id| unused::resource_row(&index, id, &graph, &winners, "leftover"))
         .collect();
 
     if ctx.out.json {
@@ -202,14 +211,22 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
                 },
                 by_type: Vec::new(),
             },
-            leftovers: Section {
+            overshadowed: Section {
+                count: shadowed_ids.len(),
+                resources: shadowed_ids.iter().map(|&id| unused::resource_row(&index, id, &graph, &winner_ids, "overshadowed")).collect(),
+                strings: Vec::new(),
+                tree: Vec::new(),
+                by_module: group_by_module(&index, &shadowed_ids),
+                by_type: unused::count_by_type(&index, &shadowed_ids),
+            },
+            unused: Section {
                 count: if show_leftovers {
-                    leftover_resources.len()
+                    unused_ids.len()
                 } else {
                     0
                 },
                 resources: if show_leftovers {
-                    leftover_resources
+                    unused_ids.iter().map(|&id| unused::resource_row(&index, id, &graph, &winner_ids, "unused")).collect()
                 } else {
                     Vec::new()
                 },
@@ -220,12 +237,12 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
                 },
                 tree: Vec::new(),
                 by_module: if show_leftovers {
-                    leftover_by_module
+                    unused_by_module
                 } else {
                     BTreeMap::new()
                 },
                 by_type: if show_leftovers {
-                    unused::count_by_type(&index, &leftover_ids)
+                    unused::count_by_type(&index, &unused_ids)
                 } else {
                     Vec::new()
                 },
@@ -271,12 +288,12 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<i32> {
             w,
             "{}",
             o.bold(&format!(
-                "LEFTOVERS — {} resources, {} talk-table strings",
-                leftover_ids.len(),
+                "UNUSED — {} resources, {} talk-table strings",
+                unused_ids.len(),
                 leftover_strings.len()
             ))
         )?;
-        let ids = apply_limit(&leftover_ids, args.limit);
+        let ids = apply_limit(&unused_ids, args.limit);
         for &i in ids {
             writeln!(w, "  {}", index.virt_path(&index.resources[i as usize]))?;
         }

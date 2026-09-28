@@ -391,7 +391,11 @@ fn module_entry_ids(index: &Index, winners: &[u32]) -> HashMap<String, Vec<u32>>
 }
 
 fn is_scan_source(t: ResType) -> bool {
-    t.is_gff() || t.is_plain_text() || matches!(t.extension(), Some("2da" | "ncs" | "ssf" | "mdl"))
+    // The engine never parses NSS source.  In particular, do not let source
+    // comments and example strings create edges that are absent from the NCS
+    // bytecode the game actually loads.
+    !is_noise(t)
+        && (t.is_gff() || t.is_plain_text() || matches!(t.extension(), Some("2da" | "ncs" | "ssf" | "mdl")))
 }
 
 fn strref_mode(t: ResType) -> StrRefMode {

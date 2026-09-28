@@ -177,7 +177,11 @@ pub fn ncs_to_json(n: &Ncs) -> J {
             if let Some(argc) = ins.argc {
                 m.insert("argc".into(), json!(argc));
             }
-            if !ins.args.is_empty() && ins.routine.is_none() {
+            // ACTION operands include the constant strings that precede the
+            // call in the bytecode.  They are the authoritative source for
+            // script resource references; dropping them makes graph scans
+            // fall back to folklore or source text.
+            if !ins.args.is_empty() {
                 let args: Vec<J> = ins
                     .args
                     .iter()
